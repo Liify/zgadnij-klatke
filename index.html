@@ -60,6 +60,8 @@ header .sp{flex:1}
 main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:20px 24px;max-width:1440px;margin:auto}
 @media(max-width:960px){main{grid-template-columns:1fr;padding:16px}}
 .stack{display:grid;gap:16px;align-content:start}
+.screen:fullscreen,.screen.big{aspect-ratio:auto;width:100vw;height:100vh;border-radius:0;border:0}
+.screen.big{position:fixed;inset:0;z-index:200}
 .screen{position:relative;aspect-ratio:16/9;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);box-shadow:0 30px 80px -40px rgba(0,0,0,.9)}
 #frameHost{position:absolute;inset:0;isolation:isolate;transform-style:flat;z-index:1;overflow:hidden}
 /* player jest o 40% wyższy niż ekran: obraz filmu zostaje w środku, a pasek sterowania (dół) i logo (góra) wypadają poza kadr */
@@ -68,7 +70,7 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:20p
 #still.zoomed{cursor:grab}
 #still.drag{cursor:grabbing}
 .zoomctl{position:absolute;right:12px;bottom:12px;z-index:6;display:flex;gap:6px}
-.zoomctl button{width:38px;height:38px;padding:0;border-radius:10px;background:rgba(10,10,14,.7);backdrop-filter:blur(6px);font-size:18px;line-height:1}
+.zoomctl button{min-width:38px;height:38px;padding:0;border-radius:10px;background:rgba(10,10,14,.7);backdrop-filter:blur(6px);font-size:18px;line-height:1}
 .zoomhint{position:absolute;left:12px;bottom:14px;z-index:6;font-size:12px;color:#cfcfd8;background:rgba(10,10,14,.6);padding:4px 8px;border-radius:8px;pointer-events:none}
 .curtain{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px;
   background:radial-gradient(600px 300px at 50% 40%,rgba(255,181,71,.08),transparent 70%),#050507}
@@ -128,7 +130,7 @@ dialog input,dialog select{width:100%}
 <!-- ============ LANDING ============ -->
 <section id="landing" class="landing">
   <h1>Zgadnij <span>Klatkę</span></h1>
-  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 8)</span></p>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 9)</span></p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
     <button class="pri" id="btnCreate">Utwórz pokój</button>
@@ -160,7 +162,8 @@ dialog input,dialog select{width:100%}
         <div class="zoomctl hidden" id="zoomCtl">
           <button id="zIn" title="Przybliż">+</button>
           <button id="zOut" title="Oddal">−</button>
-          <button id="zReset" title="Cały kadr">⤢</button>
+          <button id="zReset" title="Cały kadr (bez przybliżenia)">1:1</button>
+          <button id="zFull" title="Pełny ekran">⛶</button>
         </div>
         <div class="zoomhint hidden" id="zoomHint">kółko myszy = zoom · przeciągnij = przesuń · 2× klik = reset</div>
         <div class="curtain" id="curtain">
@@ -241,7 +244,7 @@ dialog input,dialog select{width:100%}
           <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
         </div>
       </div>
-      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 8</span></p>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 9</span></p>
     </aside>
   </main>
 </section>
@@ -513,7 +516,7 @@ function doReveal(winner){
   const f = H.film;
   H.phase = 'reveal';
   H.reveal = {title: f.title, original_title: f.original_title, year: (f.release_date || '').slice(0, 4), poster: f.poster_path, overview: f.overview, winner};
-  if (!winner) H.feed.push({sys: true, text: 'Nikt nie zgadł.'});
+  if (!winner && !H.guesserId) H.feed.push({sys: true, text: 'Nikt nie zgadł.'});
 }
 function buildHints(f){
   return [
@@ -572,6 +575,18 @@ $('screen').addEventListener('wheel', e => {
 $('zIn').onclick = () => zoomAt(Z.s * 1.5);
 $('zOut').onclick = () => zoomAt(Z.s / 1.5);
 $('zReset').onclick = resetZoom;
+// pełny ekran; gdy przeglądarka go nie da, klatka i tak rozciąga się na całe okno
+function bigOn(){ return !!document.fullscreenElement || $('screen').classList.contains('big') }
+function bigUI(){ $('zFull').textContent = bigOn() ? '✕' : '⛶'; $('zFull').title = bigOn() ? 'Zamknij pełny ekran (Esc)' : 'Pełny ekran'; resetZoom() }
+function bigOff(){ $('screen').classList.remove('big'); if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); bigUI() }
+$('zFull').onclick = () => {
+  if (bigOn()) return bigOff();
+  let done = false;
+  try { $('screen').requestFullscreen?.().then(() => { done = true }).catch(() => {}) } catch {}
+  setTimeout(() => { if (!done && !document.fullscreenElement) $('screen').classList.add('big'); bigUI() }, 500);
+};
+document.addEventListener('fullscreenchange', bigUI);
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('screen').classList.contains('big')) bigOff() });
 window.addEventListener('resize', () => applyZoom());
 function showFrame(src){
   resetZoom();
@@ -630,8 +645,7 @@ function applyState(s){
     showFrame(null);
     curtain('🎬', S.isHost ? 'Wyślij znajomym link z karty <b>Zaproś znajomych</b> i kliknij <b>Start gry</b>, gdy wszyscy będą.' : 'Czekamy, aż host wystartuje grę…');
   } else if (s.phase === 'draw') {
-    const forWho = guesser ? (guesser.id === S.me ? ' dla <b>ciebie</b>' : ' dla <b>' + esc(guesser.name) + '</b>') : '';
-    curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film' + forWho + ' — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film${forWho}…`);
+    curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film…`);
   } else if (s.phase === 'time') {
     if (!S.loading) curtain('⏱', iAmPicker
       ? `Film wylosowany (${s.runtime ? Math.floor(s.runtime / 60) + ' h ' + (s.runtime % 60) + ' min' : '?'}). Podaj minutę i sekundę, potem <b>Złap klatkę</b>.`
