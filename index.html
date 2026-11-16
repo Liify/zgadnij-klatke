@@ -104,6 +104,9 @@ input[type=range]{flex:1;min-width:160px;padding:0;border:0;background:transpare
 .players li.off{opacity:.4}
 .av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;color:#111;flex:none}
 .players .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.players .who{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
+.players .loc{font-size:12px;color:var(--mute);display:flex;align-items:center;gap:5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.players .loc img{width:16px;height:12px;border-radius:2px;flex:none}
 .players .tag{font-size:11px;color:var(--mute);margin-left:6px}
 .players .pts{font:700 18px "Space Grotesk";color:var(--acc);min-width:24px;text-align:right}
 .hostctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -124,6 +127,7 @@ dialog input,dialog select{width:100%}
   <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce.</p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
+    <label class="muted" style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer"><input type="checkbox" id="inLoc" checked style="width:auto;accent-color:var(--acc)"> Pokaż innym graczom moje miasto (zgadywane po adresie IP)</label>
     <button class="pri" id="btnCreate">Utwórz pokój</button>
     <div class="or">albo</div>
     <div class="row">
@@ -334,7 +338,7 @@ function createRoom(resume){
     if (resume?.H) { H = resume.H; H.players.forEach(p => { if (p.id !== S.me) p.online = false }) }
     else H = {players: [], round: 0, turn: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
               hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: store.get('hostSettings', {pool: 'known'})};
-    hostHandle(S.me, {t: 'join', name: S.name});
+    hostHandle(S.me, {t: 'join', name: S.name, loc: S.loc});
     if (H.frame) hostSendFrame();
     enterGame();
   });
@@ -374,7 +378,7 @@ function joinRoom(code){
   mq.on('connect', () => {
     connLost(false);
     mq.subscribe([topic(code, 'state'), topic(code, 'frame')], {qos: 1});
-    send({t: 'join', name: S.name});
+    send({t: 'join', name: S.name, loc: S.loc});
     first = false;
   });
   mq.on('message', (t, payload) => {
@@ -436,9 +440,11 @@ function hostHandle(from, m){
   switch (m.t){
     case 'join': {
       const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
+      const loc = cleanLoc(m.loc);
       const old = H.players.find(p => !p.online && p.name === name);
-      if (old) { if (H.pickerId === old.id) H.pickerId = from; old.id = from; old.online = true }
-      else if (!pl) H.players.push({id: from, name, pts: 0, online: true});
+      if (old) { if (H.pickerId === old.id) H.pickerId = from; old.id = from; old.online = true; old.loc = loc }
+      else if (!pl) H.players.push({id: from, name, pts: 0, online: true, loc});
+      else pl.loc = loc;
       hostBroadcast();
       break;
     }
@@ -453,7 +459,7 @@ function hostHandle(from, m){
       hostBroadcast();
       break;
     case 'frame': // tylko osoba wybierająca, raz na turę
-      if (from !== H.pickerId || H.phase !== 'time' || typeof m.img !== 'string') return;
+      if (from !== H.pickerId || H.phase !== 'time' || typeof m.img !== 'string' || !/^(data:image\/|https:\/\/image\.tmdb\.org\/)/.test(m.img)) return;
       H.frame = m.img; H.frameNote = String(m.note || '').slice(0, 200); H.phase = 'guess';
       hostSendFrame(); hostBroadcast();
       break;
@@ -477,6 +483,11 @@ function hostHandle(from, m){
     case 'redo': if (me && H.phase !== 'lobby') newTurn(H.players.find(p => p.id === H.pickerId && p.online) ? H.pickerId : nextPicker()); break;
     case 'settings': if (me) { H.settings = m.settings; store.set('hostSettings', H.settings); hostBroadcast() } break;
   }
+}
+function cleanLoc(l){
+  if (!l || typeof l !== 'object') return null;
+  const city = String(l.city || '').slice(0, 40), country = String(l.country || '').slice(0, 40), cc = String(l.cc || '').toLowerCase().slice(0, 2);
+  return city || country ? {city, country, cc} : null;
 }
 function doReveal(winner){
   const f = H.film;
@@ -525,7 +536,8 @@ function applyState(s){
   // gracze
   $('plist').innerHTML = s.players.map(p => `<li class="${p.id === s.pickerId && s.phase !== 'lobby' ? 'picker' : ''} ${p.online ? '' : 'off'}">
       <span class="av" style="background:${colorOf(p.name)}">${esc(p.name[0]?.toUpperCase())}</span>
-      <span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}</span>
+      <span class="who"><span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}</span>
+      ${p.loc ? `<span class="loc">${/^[a-z]{2}$/.test(p.loc.cc) ? `<img src="https://flagcdn.com/16x12/${p.loc.cc}.png" alt="">` : '📍'}${esc([p.loc.city, p.loc.country].filter(Boolean).join(', '))}</span>` : ''}</span>
       <span class="pts">${p.pts}</span></li>`).join('');
 
   // panel hosta
@@ -639,22 +651,41 @@ $('btnLoad').onclick = async () => {
   S.loading = true; $('btnLoad').disabled = true;
   loadAt(t, t, 0);
 };
+// kolejne źródła: ustawione w ⚙ (domyślnie VidFast), potem nowa domena VidFast
+function providers(){
+  const list = [local.prov, 'https://vidcore.io/movie/{id}?startAt={t}&autoPlay=true&title=false&poster=false'];
+  return [...new Set(list)];
+}
 function loadFailed(msg){
   S.loading = false; $('btnLoad').disabled = false; clearPlayer();
-  curtain('⚠', msg + '<br><span class="muted">Możesz spróbować jeszcze raz.</span>');
+  curtain('⚠', msg + '<br><span class="muted">Serwer z filmami nie odpowiada (to awaria po ich stronie).</span><br><br>' +
+    '<button class="pri" onclick="useTmdbStill()">🖼 Użyj kadru z TMDB</button> <button onclick="$(\'btnLoad\').click()">↻ Spróbuj jeszcze raz</button>');
+}
+// awaryjnie: prawdziwy kadr z tego filmu z bazy TMDB (bez napisów), tylko nie z wybranej sekundy
+async function useTmdbStill(){
+  const s = S.pub;
+  if (!s || s.pickerId !== S.me || s.phase !== 'time' || !S.myFilm || S.loadedTurn === s.turn) return;
+  try {
+    const im = await tmdb('/movie/' + S.myFilm.id + '/images', {include_image_language: 'null'});
+    const list = (im.backdrops || []).filter(b => !b.iso_639_1);
+    if (!list.length) { toast('Ten film nie ma kadrów w TMDB — host może powtórzyć turę.', 5000); return }
+    const b = list[Math.floor(Math.random() * list.length)];
+    S.loadedTurn = s.turn;
+    send({t: 'frame', img: 'https://image.tmdb.org/t/p/w1280' + b.file_path, note: 'kadr z TMDB (player nie działał)'});
+  } catch (e) { toast('Nie udało się pobrać kadru: ' + e.message) }
 }
 function clearPlayer(){
   if (pw) { clearTimeout(pw.fallback); clearInterval(pw.poll); pw = null }
   $('frameHost').innerHTML = '';
 }
-function loadAt(t, asked, attempt){
+function loadAt(t, asked, attempt, pi = 0){
   clearPlayer();
   const f = document.createElement('iframe');
   f.allow = 'autoplay; fullscreen; encrypted-media';
   f.referrerPolicy = 'origin';
-  f.src = local.prov.replaceAll('{id}', S.myFilm.id).replaceAll('{t}', t);
+  f.src = providers()[pi].replaceAll('{id}', S.myFilm.id).replaceAll('{t}', t);
   $('frameHost').appendChild(f);
-  startWatch(f, t, asked, attempt);
+  startWatch(f, t, asked, attempt, pi);
   curtain(fmtTime(asked), '<span class="spin"></span>' + (attempt ? 'Trafiło w napisy — przesuwam kawałek… ' : 'Ładuję film i łapię klatkę… ') + '<span id="pState" class="muted"></span>');
 }
 
@@ -725,9 +756,14 @@ function classifyFrame(c){
 let pw = null;
 function sendCmd(msg){ const f = $('frameHost').querySelector('iframe'); try { f?.contentWindow.postMessage(msg, '*') } catch {} }
 function pState(txt){ const el = $('pState'); if (el) el.innerHTML = txt }
-function startWatch(frame, target, asked, attempt){
-  pw = {frame, target, asked, attempt, state: 'loading', got: false, grabbing: false};
-  pw.fallback = setTimeout(() => { if (pw?.frame === frame && pw.state === 'loading') loadFailed(pw.got ? 'Film się nie wczytał.' : 'Player nie odpowiada.') }, 45000);
+function startWatch(frame, target, asked, attempt, pi){
+  pw = {frame, target, asked, attempt, pi, state: 'loading', got: false, grabbing: false};
+  // brak odtwarzania w 25 s → następne źródło, a gdy skończą się źródła → komunikat z kadrem z TMDB
+  pw.fallback = setTimeout(() => {
+    if (pw?.frame !== frame || pw.state !== 'loading') return;
+    if (pi + 1 < providers().length) { pState('— próbuję zapasowego serwera…'); loadAt(target, asked, attempt, pi + 1) }
+    else loadFailed('Film się nie wczytał.');
+  }, 25000);
   pw.poll = setInterval(() => { if (pw?.frame === frame) sendCmd({command: 'getStatus'}) }, 250);
 }
 function parsePlayerMsg(d){
@@ -758,7 +794,7 @@ window.addEventListener('message', e => {
       const R = (S.myFilm.runtime || 120) * 60, dir = me.target > R / 2 ? -1 : 1, {min, max} = curRange();
       let nt = Math.min(max, Math.max(min, me.target + dir * (kind === 'black' ? 20 : 90)));
       if (nt === me.target) nt = Math.min(max, Math.max(min, me.target - dir * 90));
-      loadAt(nt, me.asked, me.attempt + 1);
+      loadAt(nt, me.asked, me.attempt + 1, me.pi);
       return;
     }
     const moved = Math.round(me.target - me.asked);
@@ -844,17 +880,28 @@ $('btnSave').onclick = () => {
 const params = new URLSearchParams(location.search);
 $('inName').value = store.get('name', '');
 if (params.get('room')) { $('inCode').value = params.get('room').toUpperCase(); $('btnJoin').classList.add('pri'); $('btnCreate').classList.remove('pri') }
+// miasto po adresie IP (tylko gdy gracz się zgodzi); max 3 s czekania
+async function fetchLoc(){
+  if (!$('inLoc').checked) return null;
+  const get = (url, map) => Promise.race([fetch(url).then(r => r.json()).then(map), new Promise((_, rej) => setTimeout(() => rej('timeout'), 3000))]);
+  try { return await get('https://get.geojs.io/v1/ip/geo.json', j => ({city: j.city, country: j.country, cc: j.country_code})) } catch {}
+  try { return await get('https://ipwho.is/', j => ({city: j.city, country: j.country, cc: j.country_code})) } catch {}
+  return null;
+}
+$('inLoc').checked = store.get('showLoc', true);
+$('inLoc').onchange = () => store.set('showLoc', $('inLoc').checked);
 function readName(){
   const n = $('inName').value.trim();
   if (!n) { $('landErr').textContent = 'Podaj nick.'; $('inName').focus(); return null }
   store.set('name', n); S.name = n; $('landErr').textContent = ''; return n;
 }
-$('btnCreate').onclick = () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; createRoom() };
-$('btnJoin').onclick = () => {
+$('btnCreate').onclick = async () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; S.loc = await fetchLoc(); createRoom() };
+$('btnJoin').onclick = async () => {
   if (!readName()) return;
   const code = $('inCode').value.trim().toUpperCase();
   if (code.length < 5) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
   $('btnJoin').disabled = true; $('btnJoin').textContent = 'Łączę…';
+  S.loc = await fetchLoc();
   let hr = null; try { hr = JSON.parse(sessionStorage.getItem('zk.hostRoom') || 'null') } catch {}
   if (hr?.code === code && hr.H) createRoom(hr); else joinRoom(code);
 };
