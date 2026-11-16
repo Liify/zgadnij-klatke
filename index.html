@@ -105,8 +105,6 @@ input[type=range]{flex:1;min-width:160px;padding:0;border:0;background:transpare
 .av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;color:#111;flex:none}
 .players .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .players .who{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.25}
-.players .loc{font-size:12px;color:var(--mute);display:flex;align-items:center;gap:5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.players .loc img{width:16px;height:12px;border-radius:2px;flex:none}
 .players .tag{font-size:11px;color:var(--mute);margin-left:6px}
 .players .pts{font:700 18px "Space Grotesk";color:var(--acc);min-width:24px;text-align:right}
 .hostctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -127,7 +125,6 @@ dialog input,dialog select{width:100%}
   <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce.</p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
-    <label class="muted" style="display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer"><input type="checkbox" id="inLoc" checked style="width:auto;accent-color:var(--acc)"> Pokaż innym graczom moje miasto (zgadywane po adresie IP)</label>
     <button class="pri" id="btnCreate">Utwórz pokój</button>
     <div class="or">albo</div>
     <div class="row">
@@ -146,7 +143,7 @@ dialog input,dialog select{width:100%}
     <span class="pill muted" id="roundPill">Runda 0</span>
     <span class="pill">Pokój <code id="roomCode">—</code></span>
     <button class="sm" id="btnCopy">🔗 Kopiuj link</button>
-    <button class="sm ghost" id="btnSettings" title="Ustawienia">⚙</button>
+    <span class="pill muted" id="modePill"></span>
   </header>
 
   <main>
@@ -217,6 +214,13 @@ dialog input,dialog select{width:100%}
       </div>
       <div class="card hidden" id="hostCard">
         <p class="label">Panel hosta</p>
+        <label class="muted" style="font-size:13px">Tryb gry</label>
+        <select id="sMode" style="width:100%;margin:6px 0 10px">
+          <option value="race">Wszyscy zgadują — kto pierwszy</option>
+          <option value="own">Każdy zgaduje tylko swój film</option>
+        </select>
+        <label class="muted" style="font-size:13px">Pula filmów</label>
+        <select id="sPool" style="width:100%;margin:6px 0 14px"></select>
         <div class="hostctl">
           <button class="pri wide" id="btnStart">▶ Start gry</button>
           <button id="btnHint">💡 Podpowiedź</button>
@@ -230,22 +234,6 @@ dialog input,dialog select{width:100%}
   </main>
 </section>
 
-<dialog id="dlg">
-  <h2 style="margin:0 0 4px">Ustawienia</h2>
-  <p class="muted" style="margin:0" id="dlgNote"></p>
-  <div id="hostSettings">
-    <label>Pula filmów</label>
-    <select id="sPool"></select>
-  </div>
-  <label>Źródło playera ({id} = TMDB id, {t} = sekundy)</label>
-  <input id="sProv">
-  <label>Klucz TMDB API</label>
-  <input id="sKey">
-  <div class="row" style="margin-top:18px;justify-content:flex-end">
-    <button class="ghost" onclick="this.closest('dialog').close()">Anuluj</button>
-    <button class="pri" id="btnSave">Zapisz</button>
-  </div>
-</dialog>
 
 <div id="toast" class="toast hidden"></div>
 <div id="netWarn" class="toast hidden" style="bottom:auto;top:76px;border-color:var(--bad)">⚡ Brak połączenia z serwerem gry — łączę ponownie…</div>
@@ -262,7 +250,7 @@ const store = {
   get(k, d){ try { const v = localStorage.getItem('zk.' + k); return v ? JSON.parse(v) : d } catch { return d } },
   set(k, v){ try { localStorage.setItem('zk.' + k, JSON.stringify(v)) } catch {} }
 };
-let local = Object.assign({}, DEFAULTS, store.get('local', {}));
+const local = DEFAULTS;
 
 // ================= TMDB =================
 async function tmdb(path, params = {}){
@@ -337,8 +325,8 @@ function createRoom(resume){
     first = false;
     if (resume?.H) { H = resume.H; H.players.forEach(p => { if (p.id !== S.me) p.online = false }) }
     else H = {players: [], round: 0, turn: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
-              hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: store.get('hostSettings', {pool: 'known'})};
-    hostHandle(S.me, {t: 'join', name: S.name, loc: S.loc});
+              hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: Object.assign({pool: 'known', mode: 'race'}, store.get('hostSettings', {}))};
+    hostHandle(S.me, {t: 'join', name: S.name});
     if (H.frame) hostSendFrame();
     enterGame();
   });
@@ -378,7 +366,7 @@ function joinRoom(code){
   mq.on('connect', () => {
     connLost(false);
     mq.subscribe([topic(code, 'state'), topic(code, 'frame')], {qos: 1});
-    send({t: 'join', name: S.name, loc: S.loc});
+    send({t: 'join', name: S.name});
     first = false;
   });
   mq.on('message', (t, payload) => {
@@ -405,10 +393,13 @@ function send(msg){
 }
 
 // ---------- logika hosta ----------
+const MODES = {race: 'Kto pierwszy', own: 'Każdy swój film'};
+const OWN_TRIES = 3;
 function pubState(){
   return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
           runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
-          feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings};
+          feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings,
+          guesserId: H.guesserId || null, triesLeft: H.guesserId ? OWN_TRIES - (H.tries || 0) : null};
 }
 function hostBroadcast(){
   const s = pubState();
@@ -422,9 +413,17 @@ function hostSendFrame(){
 }
 function newTurn(pickerId){
   H.turn = (H.turn || 0) + 1;
-  Object.assign(H, {phase: 'draw', pickerId, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
+  // tryb „każdy swój film”: klatkę od osoby wybierającej zgaduje tylko następny gracz
+  const guesserId = H.settings.mode === 'own' ? (nextAfter(pickerId) || pickerId) : null;
+  Object.assign(H, {phase: 'draw', pickerId, guesserId, tries: 0, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
   hostSendFrame();
   hostBroadcast();
+}
+function nextAfter(id){
+  const online = H.players.filter(p => p.online);
+  if (online.length < 2) return null;
+  const i = online.findIndex(p => p.id === id);
+  return online[(i + 1) % online.length].id;
 }
 function nextPicker(){
   const online = H.players.filter(p => p.online);
@@ -440,11 +439,9 @@ function hostHandle(from, m){
   switch (m.t){
     case 'join': {
       const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
-      const loc = cleanLoc(m.loc);
       const old = H.players.find(p => !p.online && p.name === name);
-      if (old) { if (H.pickerId === old.id) H.pickerId = from; old.id = from; old.online = true; old.loc = loc }
-      else if (!pl) H.players.push({id: from, name, pts: 0, online: true, loc});
-      else pl.loc = loc;
+      if (old) { if (H.pickerId === old.id) H.pickerId = from; if (H.guesserId === old.id) H.guesserId = from; old.id = from; old.online = true; delete old.loc }
+      else if (!pl) H.players.push({id: from, name, pts: 0, online: true});
       hostBroadcast();
       break;
     }
@@ -465,6 +462,7 @@ function hostHandle(from, m){
       break;
     case 'guess': {
       if (H.phase !== 'guess' || !pl || !H.film) return;
+      if (H.guesserId && from !== H.guesserId) return; // w trybie „każdy swój film” zgaduje tylko właściciel klatki
       const text = String(m.text || '').slice(0, 120);
       const ok = (+m.id && +m.id === H.film.id) || [H.film.title, H.film.original_title].some(t => norm(t) && norm(t) === norm(text));
       if (ok) {
@@ -473,6 +471,7 @@ function hostHandle(from, m){
         doReveal(pl.name);
       } else {
         H.feed.push({bad: true, name: pl.name, text});
+        if (H.guesserId && ++H.tries >= OWN_TRIES) { H.feed.push({sys: true, text: pl.name + ' wykorzystał wszystkie próby.'}); doReveal(null) }
       }
       hostBroadcast();
       break;
@@ -481,13 +480,13 @@ function hostHandle(from, m){
     case 'reveal': if (me && (H.phase === 'guess' || H.phase === 'time') && H.film) { doReveal(null); hostBroadcast() } break;
     case 'next': if (me && H.phase !== 'lobby') { H.round++; newTurn(nextPicker()) } break;
     case 'redo': if (me && H.phase !== 'lobby') newTurn(H.players.find(p => p.id === H.pickerId && p.online) ? H.pickerId : nextPicker()); break;
-    case 'settings': if (me) { H.settings = m.settings; store.set('hostSettings', H.settings); hostBroadcast() } break;
+    case 'settings': if (me) {
+      H.settings = {pool: POOLS[m.settings?.pool] ? m.settings.pool : 'known', mode: MODES[m.settings?.mode] ? m.settings.mode : 'race'};
+      store.set('hostSettings', H.settings);
+      if (H.phase === 'lobby') H.guesserId = null;
+      hostBroadcast();
+    } break;
   }
-}
-function cleanLoc(l){
-  if (!l || typeof l !== 'object') return null;
-  const city = String(l.city || '').slice(0, 40), country = String(l.country || '').slice(0, 40), cc = String(l.cc || '').toLowerCase().slice(0, 2);
-  return city || country ? {city, country, cc} : null;
 }
 function doReveal(winner){
   const f = H.film;
@@ -532,12 +531,18 @@ function applyState(s){
   if (!S.isHost && (s.phase === 'draw' || s.phase === 'time' || s.phase === 'lobby')) showFrame(null);
 
   $('roundPill').textContent = s.round ? 'Runda ' + s.round : 'Lobby';
+  const mode = s.settings?.mode || 'race';
+  $('modePill').textContent = 'Tryb: ' + MODES[mode];
+  const guesser = s.players.find(p => p.id === s.guesserId);
+  if (S.isHost && document.activeElement !== $('sMode') && document.activeElement !== $('sPool')) {
+    if (!$('sPool').options.length) $('sPool').innerHTML = Object.entries(POOLS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
+    $('sMode').value = mode; $('sPool').value = s.settings?.pool || 'known';
+  }
 
   // gracze
   $('plist').innerHTML = s.players.map(p => `<li class="${p.id === s.pickerId && s.phase !== 'lobby' ? 'picker' : ''} ${p.online ? '' : 'off'}">
       <span class="av" style="background:${colorOf(p.name)}">${esc(p.name[0]?.toUpperCase())}</span>
-      <span class="who"><span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}</span>
-      ${p.loc ? `<span class="loc">${/^[a-z]{2}$/.test(p.loc.cc) ? `<img src="https://flagcdn.com/16x12/${p.loc.cc}.png" alt="">` : '📍'}${esc([p.loc.city, p.loc.country].filter(Boolean).join(', '))}</span>` : ''}</span>
+      <span class="who"><span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}${p.id === s.guesserId && s.phase !== 'lobby' ? '<span class="tag">🎯 zgaduje</span>' : ''}</span>
       <span class="pts">${p.pts}</span></li>`).join('');
 
   // panel hosta
@@ -563,7 +568,8 @@ function applyState(s){
     showFrame(null);
     curtain('🎬', S.isHost ? 'Wyślij znajomym link z karty <b>Zaproś znajomych</b> i kliknij <b>Start gry</b>, gdy wszyscy będą.' : 'Czekamy, aż host wystartuje grę…');
   } else if (s.phase === 'draw') {
-    curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film…`);
+    const forWho = guesser ? (guesser.id === S.me ? ' dla <b>ciebie</b>' : ' dla <b>' + esc(guesser.name) + '</b>') : '';
+    curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film' + forWho + ' — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film${forWho}…`);
   } else if (s.phase === 'time') {
     if (!S.loading) curtain('⏱', iAmPicker
       ? `Film wylosowany (${s.runtime ? Math.floor(s.runtime / 60) + ' h ' + (s.runtime % 60) + ' min' : '?'}). Podaj minutę i sekundę, potem <b>Złap klatkę</b>.`
@@ -573,9 +579,12 @@ function applyState(s){
   }
 
   // zgadywanie
-  const canGuess = s.phase === 'guess' && !!me;
+  const canGuess = s.phase === 'guess' && !!me && (!s.guesserId || s.guesserId === S.me);
   $('guess').disabled = !canGuess;
-  $('guess').placeholder = canGuess ? 'Wpisz tytuł i wybierz film z listy…' : (s.phase === 'reveal' ? 'Tura zakończona' : 'Poczekaj na klatkę…');
+  $('guess').placeholder = canGuess ? 'Wpisz tytuł i wybierz film z listy…' + (s.guesserId ? ` (zostało prób: ${s.triesLeft})` : '')
+    : s.phase === 'reveal' ? 'Tura zakończona'
+    : s.phase === 'guess' && s.guesserId ? 'Teraz zgaduje ' + (guesser?.name || '?') + ' — ty tylko patrzysz'
+    : 'Poczekaj na klatkę…';
   $('hints').innerHTML = s.hints.map(h => `<span class="hint">${esc(h)}</span>`).join('') + (s.frameNote ? `<span class="hint" style="background:transparent;border-color:var(--line2)">${esc(s.frameNote)}</span>` : '');
   $('feed').innerHTML = s.feed.slice().reverse().map(f => f.sys ? `<div class="muted">${esc(f.text)}</div>`
       : f.ok ? `<div class="ok">✔ ${esc(f.text)}</div>`
@@ -845,6 +854,10 @@ function submitGuess(){
 
 // ================= Host / UI =================
 $('btnStart').onclick = () => send({t: 'start'});
+$('sMode').onchange = $('sPool').onchange = () => {
+  send({t: 'settings', settings: {mode: $('sMode').value, pool: $('sPool').value}});
+  if (S.pub?.phase !== 'lobby') toast('Zmiana zadziała od następnej tury');
+};
 $('btnHint').onclick = () => send({t: 'hint'});
 $('btnReveal').onclick = () => send({t: 'reveal'});
 $('btnNext').onclick = () => send({t: 'next'});
@@ -860,48 +873,22 @@ async function copyInvite(btn){
 }
 $('btnCopy').onclick = () => copyInvite($('btnCopy'));
 $('btnCopy2').onclick = () => copyInvite($('btnCopy2'));
-$('btnSettings').onclick = () => {
-  $('hostSettings').classList.toggle('hidden', !S.isHost);
-  $('dlgNote').textContent = S.isHost ? '' : 'Pulę filmów ustawia host.';
-  const st = S.pub?.settings || {pool: 'known'};
-  $('sPool').innerHTML = Object.entries(POOLS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
-  $('sPool').value = POOLS[st.pool] ? st.pool : 'known';
-  $('sProv').value = local.prov; $('sKey').value = local.key;
-  $('dlg').showModal();
-};
-$('btnSave').onclick = () => {
-  local = {prov: $('sProv').value.trim() || DEFAULTS.prov, key: $('sKey').value.trim() || DEFAULTS.key};
-  store.set('local', local);
-  if (S.isHost) send({t: 'settings', settings: {pool: $('sPool').value}});
-  $('dlg').close();
-};
 
 // ================= Start =================
 const params = new URLSearchParams(location.search);
 $('inName').value = store.get('name', '');
 if (params.get('room')) { $('inCode').value = params.get('room').toUpperCase(); $('btnJoin').classList.add('pri'); $('btnCreate').classList.remove('pri') }
-// miasto po adresie IP (tylko gdy gracz się zgodzi); max 3 s czekania
-async function fetchLoc(){
-  if (!$('inLoc').checked) return null;
-  const get = (url, map) => Promise.race([fetch(url).then(r => r.json()).then(map), new Promise((_, rej) => setTimeout(() => rej('timeout'), 3000))]);
-  try { return await get('https://get.geojs.io/v1/ip/geo.json', j => ({city: j.city, country: j.country, cc: j.country_code})) } catch {}
-  try { return await get('https://ipwho.is/', j => ({city: j.city, country: j.country, cc: j.country_code})) } catch {}
-  return null;
-}
-$('inLoc').checked = store.get('showLoc', true);
-$('inLoc').onchange = () => store.set('showLoc', $('inLoc').checked);
 function readName(){
   const n = $('inName').value.trim();
   if (!n) { $('landErr').textContent = 'Podaj nick.'; $('inName').focus(); return null }
   store.set('name', n); S.name = n; $('landErr').textContent = ''; return n;
 }
-$('btnCreate').onclick = async () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; S.loc = await fetchLoc(); createRoom() };
+$('btnCreate').onclick = async () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; createRoom() };
 $('btnJoin').onclick = async () => {
   if (!readName()) return;
   const code = $('inCode').value.trim().toUpperCase();
   if (code.length < 5) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
   $('btnJoin').disabled = true; $('btnJoin').textContent = 'Łączę…';
-  S.loc = await fetchLoc();
   let hr = null; try { hr = JSON.parse(sessionStorage.getItem('zk.hostRoom') || 'null') } catch {}
   if (hr?.code === code && hr.H) createRoom(hr); else joinRoom(code);
 };
