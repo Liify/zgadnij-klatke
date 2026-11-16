@@ -122,7 +122,7 @@ dialog input,dialog select{width:100%}
 <!-- ============ LANDING ============ -->
 <section id="landing" class="landing">
   <h1>Zgadnij <span>Klatkę</span></h1>
-  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce.</p>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 7)</span></p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
     <button class="pri" id="btnCreate">Utwórz pokój</button>
@@ -229,7 +229,7 @@ dialog input,dialog select{width:100%}
           <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
         </div>
       </div>
-      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.</p>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 7</span></p>
     </aside>
   </main>
 </section>
@@ -394,12 +394,12 @@ function send(msg){
 
 // ---------- logika hosta ----------
 const MODES = {race: 'Kto pierwszy', own: 'Każdy swój film'};
-const OWN_TRIES = 3;
+const MAX_TRIES = 3; // każdy gracz ma 3 próby na turę: trafienie za 1. razem = 3 pkt, za 2. = 2 pkt, za 3. = 1 pkt
 function pubState(){
   return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
           runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
           feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings,
-          guesserId: H.guesserId || null, triesLeft: H.guesserId ? OWN_TRIES - (H.tries || 0) : null};
+          guesserId: H.guesserId || null, triesBy: H.triesBy || {}};
 }
 function hostBroadcast(){
   const s = pubState();
@@ -414,8 +414,8 @@ function hostSendFrame(){
 function newTurn(pickerId){
   H.turn = (H.turn || 0) + 1;
   // tryb „każdy swój film”: klatkę od osoby wybierającej zgaduje tylko następny gracz
-  const guesserId = H.settings.mode === 'own' ? (nextAfter(pickerId) || pickerId) : null;
-  Object.assign(H, {phase: 'draw', pickerId, guesserId, tries: 0, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
+  const guesserId = H.settings.mode === 'own' ? pickerId : null;
+  Object.assign(H, {phase: 'draw', pickerId, guesserId, triesBy: {}, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
   hostSendFrame();
   hostBroadcast();
 }
@@ -440,7 +440,7 @@ function hostHandle(from, m){
     case 'join': {
       const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
       const old = H.players.find(p => !p.online && p.name === name);
-      if (old) { if (H.pickerId === old.id) H.pickerId = from; if (H.guesserId === old.id) H.guesserId = from; old.id = from; old.online = true; delete old.loc }
+      if (old) { if (H.pickerId === old.id) H.pickerId = from; if (H.guesserId === old.id) H.guesserId = from; if (H.triesBy?.[old.id] != null) H.triesBy[from] = H.triesBy[old.id]; old.id = from; old.online = true; delete old.loc }
       else if (!pl) H.players.push({id: from, name, pts: 0, online: true});
       hostBroadcast();
       break;
@@ -462,16 +462,24 @@ function hostHandle(from, m){
       break;
     case 'guess': {
       if (H.phase !== 'guess' || !pl || !H.film) return;
-      if (H.guesserId && from !== H.guesserId) return; // w trybie „każdy swój film” zgaduje tylko właściciel klatki
+      if (H.guesserId && from !== H.guesserId) return; // w trybie „każdy swój film” zgaduje tylko osoba, która wylosowała film
+      H.triesBy = H.triesBy || {};
+      const used = H.triesBy[from] || 0;
+      if (used >= MAX_TRIES) return;
       const text = String(m.text || '').slice(0, 120);
       const ok = (+m.id && +m.id === H.film.id) || [H.film.title, H.film.original_title].some(t => norm(t) && norm(t) === norm(text));
       if (ok) {
-        pl.pts++;
-        H.feed.push({ok: true, text: pl.name + ' zgadł! +1'});
+        const pts = MAX_TRIES - used;
+        pl.pts += pts;
+        H.feed.push({ok: true, text: pl.name + ' zgadł za ' + (used + 1) + '. razem! +' + pts + ' pkt'});
         doReveal(pl.name);
       } else {
         H.feed.push({bad: true, name: pl.name, text});
-        if (H.guesserId && ++H.tries >= OWN_TRIES) { H.feed.push({sys: true, text: pl.name + ' wykorzystał wszystkie próby.'}); doReveal(null) }
+        H.triesBy[from] = used + 1;
+        if (used + 1 >= MAX_TRIES) H.feed.push({sys: true, text: pl.name + ' wykorzystał wszystkie próby.'});
+        // koniec tury, gdy nikt, kto może zgadywać, nie ma już prób
+        const canStill = H.players.filter(p => p.online && (!H.guesserId || p.id === H.guesserId) && (H.triesBy[p.id] || 0) < MAX_TRIES);
+        if (!canStill.length) doReveal(null);
       }
       hostBroadcast();
       break;
@@ -484,6 +492,7 @@ function hostHandle(from, m){
       H.settings = {pool: POOLS[m.settings?.pool] ? m.settings.pool : 'known', mode: MODES[m.settings?.mode] ? m.settings.mode : 'race'};
       store.set('hostSettings', H.settings);
       if (H.phase === 'lobby') H.guesserId = null;
+      else if (H.phase === 'draw' || H.phase === 'time') H.guesserId = H.settings.mode === 'own' ? H.pickerId : null;
       hostBroadcast();
     } break;
   }
@@ -542,7 +551,7 @@ function applyState(s){
   // gracze
   $('plist').innerHTML = s.players.map(p => `<li class="${p.id === s.pickerId && s.phase !== 'lobby' ? 'picker' : ''} ${p.online ? '' : 'off'}">
       <span class="av" style="background:${colorOf(p.name)}">${esc(p.name[0]?.toUpperCase())}</span>
-      <span class="who"><span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}${p.id === s.guesserId && s.phase !== 'lobby' ? '<span class="tag">🎯 zgaduje</span>' : ''}</span>
+      <span class="who"><span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? `<span class="tag">🎬 ${s.guesserId ? 'losuje i zgaduje' : 'wybiera'}</span>` : ''}${s.phase === 'guess' && (s.triesBy || {})[p.id] ? `<span class="tag">${'✗'.repeat(s.triesBy[p.id])}</span>` : ''}</span>
       <span class="pts">${p.pts}</span></li>`).join('');
 
   // panel hosta
@@ -579,9 +588,11 @@ function applyState(s){
   }
 
   // zgadywanie
-  const canGuess = s.phase === 'guess' && !!me && (!s.guesserId || s.guesserId === S.me);
+  const myLeft = MAX_TRIES - ((s.triesBy || {})[S.me] || 0);
+  const canGuess = s.phase === 'guess' && !!me && (!s.guesserId || s.guesserId === S.me) && myLeft > 0;
   $('guess').disabled = !canGuess;
-  $('guess').placeholder = canGuess ? 'Wpisz tytuł i wybierz film z listy…' + (s.guesserId ? ` (zostało prób: ${s.triesLeft})` : '')
+  $('guess').placeholder = canGuess ? `Wpisz tytuł i wybierz z listy — próba ${MAX_TRIES - myLeft + 1}/${MAX_TRIES}, trafienie = ${myLeft} pkt`
+    : s.phase === 'guess' && (!s.guesserId || s.guesserId === S.me) && myLeft <= 0 ? 'Wykorzystałeś wszystkie 3 próby'
     : s.phase === 'reveal' ? 'Tura zakończona'
     : s.phase === 'guess' && s.guesserId ? 'Teraz zgaduje ' + (guesser?.name || '?') + ' — ty tylko patrzysz'
     : 'Poczekaj na klatkę…';
@@ -856,7 +867,7 @@ function submitGuess(){
 $('btnStart').onclick = () => send({t: 'start'});
 $('sMode').onchange = $('sPool').onchange = () => {
   send({t: 'settings', settings: {mode: $('sMode').value, pool: $('sPool').value}});
-  if (S.pub?.phase !== 'lobby') toast('Zmiana zadziała od następnej tury');
+  if (S.pub?.phase === 'guess' || S.pub?.phase === 'reveal') toast('Zmiana zadziała od następnej tury');
 };
 $('btnHint').onclick = () => send({t: 'hint'});
 $('btnReveal').onclick = () => send({t: 'reveal'});
