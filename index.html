@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
 :root{
   --bg:#08080b; --bg2:#0f0f14; --card:rgba(255,255,255,.035); --card2:rgba(255,255,255,.06);
@@ -191,7 +191,6 @@ dialog input,dialog select{width:100%}
             <input id="guess" placeholder="Wpisz tytuł filmu…" autocomplete="off" disabled>
             <ul id="sugList" class="hidden"></ul>
           </div>
-          <button class="pri" id="btnGuess" disabled>Zgaduję</button>
         </div>
         <div class="hints" id="hints"></div>
         <div class="feed" id="feed"></div>
@@ -203,6 +202,14 @@ dialog input,dialog select{width:100%}
       <div class="card">
         <p class="label">Gracze</p>
         <ul class="players" id="plist"></ul>
+      </div>
+      <div class="card" id="inviteCard">
+        <p class="label">Zaproś znajomych</p>
+        <div class="row" style="flex-wrap:nowrap">
+          <input id="inviteLink" readonly style="flex:1;min-width:0;font-size:13px" onclick="this.select()">
+          <button class="sm" id="btnCopy2">Kopiuj</button>
+        </div>
+        <p class="muted" style="font-size:13px;margin:8px 0 0">albo podaj kod pokoju: <b id="roomCode2" style="color:var(--acc);letter-spacing:.15em"></b></p>
       </div>
       <div class="card hidden" id="hostCard">
         <p class="label">Panel hosta</p>
@@ -224,14 +231,7 @@ dialog input,dialog select{width:100%}
   <p class="muted" style="margin:0" id="dlgNote"></p>
   <div id="hostSettings">
     <label>Pula filmów</label>
-    <select id="sPool">
-      <option value="popular">Popularne</option>
-      <option value="top_rated">Najwyżej oceniane</option>
-      <option value="discover_pl">Polskie filmy</option>
-      <option value="classics">Klasyki (przed 2000)</option>
-    </select>
-    <label>Ile stron puli (1 strona = 20 filmów)</label>
-    <input id="sPages" type="number" min="1" max="50" value="10">
+    <select id="sPool"></select>
   </div>
   <label>Źródło playera ({id} = TMDB id, {t} = sekundy)</label>
   <input id="sProv">
@@ -244,6 +244,7 @@ dialog input,dialog select{width:100%}
 </dialog>
 
 <div id="toast" class="toast hidden"></div>
+<div id="netWarn" class="toast hidden" style="bottom:auto;top:76px;border-color:var(--bad)">⚡ Brak połączenia z serwerem gry — łączę ponownie…</div>
 
 <script>
 // ================= Konfiguracja =================
@@ -270,13 +271,17 @@ async function tmdb(path, params = {}){
   return r.json();
 }
 const img = (p, s = 'w500') => p ? 'https://image.tmdb.org/t/p/' + s + p : '';
-function poolRequest(pool, page){
-  switch (pool){
-    case 'top_rated': return tmdb('/movie/top_rated', {page});
-    case 'discover_pl': return tmdb('/discover/movie', {page, with_original_language: 'pl', sort_by: 'popularity.desc', 'vote_count.gte': 50});
-    case 'classics': return tmdb('/discover/movie', {page, 'primary_release_date.lte': '1999-12-31', sort_by: 'vote_count.desc'});
-    default: return tmdb('/movie/popular', {page});
-  }
+const POOLS = {
+  known:    {label: 'Znane filmy (top 500 wszech czasów)', q: {sort_by: 'vote_count.desc'}, pages: [1, 25]},
+  harder:   {label: 'Trudniejsze (miejsca 500–2000)',      q: {sort_by: 'vote_count.desc'}, pages: [26, 100]},
+  pl:       {label: 'Polskie filmy',                       q: {sort_by: 'vote_count.desc', with_original_language: 'pl'}, pages: [1, 8]},
+  classics: {label: 'Klasyki (przed 2000)',                q: {sort_by: 'vote_count.desc', 'primary_release_date.lte': '1999-12-31'}, pages: [1, 15]},
+  recent:   {label: 'Ostatnie lata (2020+)',               q: {sort_by: 'vote_count.desc', 'primary_release_date.gte': '2020-01-01'}, pages: [1, 10]},
+};
+function poolRequest(pool){
+  const p = POOLS[pool] || POOLS.known;
+  const page = p.pages[0] + Math.floor(Math.random() * (p.pages[1] - p.pages[0] + 1));
+  return tmdb('/discover/movie', Object.assign({page, include_adult: false}, p.q));
 }
 
 // ================= Utils =================
@@ -295,57 +300,104 @@ function rangeFor(runtimeMin){
   return {min, max: Math.max(min + 60, max)};
 }
 
-// ================= Sieć (PeerJS) =================
+// ================= Sieć (MQTT przez publiczny serwer) =================
+// Wszyscy łączą się z publicznym brokerem MQTT (WebSocket po HTTPS) — działa przez internet, bez łączenia komputerów bezpośrednio.
 // Host trzyma pełny stan gry (łącznie z tajnym filmem). Reszta dostaje tylko stan publiczny.
-const S = {me: null, name: '', code: null, isHost: false, peer: null, conns: new Map(), hostConn: null, pub: null, myFilm: null, loadedRound: -1, drewRound: -1};
+const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
+const NS = 'zgadnijklatke/v2/';
+const topic = (code, k) => NS + code + '/' + k;
+const rid = () => Math.random().toString(36).slice(2, 10);
+const S = {me: null, name: '', code: null, isHost: false, mq: null, pub: null, myFilm: null, seen: new Map()};
 let H = null; // stan hosta
 
 function newCode(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s }
 
-function createRoom(){
-  const code = newCode();
-  const peer = new Peer(PEER_PREFIX + code);
-  peer.on('open', id => {
-    S.peer = peer; S.me = id; S.code = code; S.isHost = true;
-    H = {players: [], round: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
-         hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: store.get('hostSettings', {pool: 'popular', pages: 10})};
-    hostHandle(id, {t: 'join', name: S.name});
+function mqConnect(will){
+  return mqtt.connect(BROKER, {clientId: 'zk_' + rid(), clean: true, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 10000, will});
+}
+function connLost(on){
+  $('netWarn').classList.toggle('hidden', !on);
+}
+
+function createRoom(resume){
+  const code = resume?.code || newCode();
+  S.code = code; S.isHost = true; S.me = resume?.me || 'h_' + rid();
+  // gdy host zniknie, broker sam wyczyści stan pokoju → goście zobaczą komunikat
+  const mq = mqConnect({topic: topic(code, 'state'), payload: '', retain: true, qos: 1});
+  S.mq = mq;
+  let first = true;
+  mq.on('connect', () => {
+    connLost(false);
+    mq.subscribe(topic(code, 'up'), {qos: 1});
+    if (!first) { hostBroadcast(); if (H.frame) hostSendFrame(); return }
+    first = false;
+    if (resume?.H) { H = resume.H; H.players.forEach(p => { if (p.id !== S.me) p.online = false }) }
+    else H = {players: [], round: 0, turn: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
+              hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: store.get('hostSettings', {pool: 'known'})};
+    hostHandle(S.me, {t: 'join', name: S.name});
+    if (H.frame) hostSendFrame();
     enterGame();
   });
-  peer.on('connection', conn => {
-    conn.on('open', () => S.conns.set(conn.peer, conn));
-    conn.on('data', m => hostHandle(conn.peer, m));
-    conn.on('close', () => { S.conns.delete(conn.peer); const p = H.players.find(p => p.id === conn.peer); if (p) { p.online = false; if (H.pickerId === p.id && H.phase !== 'reveal') H.feed.push({sys: true, text: p.name + ' wyszedł — host może powtórzyć turę albo przejść dalej.'}); hostBroadcast() } });
+  mq.on('message', (t, payload) => {
+    let m; try { m = JSON.parse(payload.toString()) } catch { return }
+    if (!m?.from || m.from === S.me) return;
+    S.seen.set(m.from, Date.now());
+    hostHandle(m.from, m);
   });
-  peer.on('error', e => {
-    if (e.type === 'unavailable-id') { peer.destroy(); createRoom(); return }
-    console.warn(e); if (!S.me) $('landErr').textContent = 'Błąd połączenia: ' + e.type;
-  });
+  mq.on('offline', () => connLost(true));
+  mq.on('error', e => { if (first) $('landErr').textContent = 'Nie mogę połączyć się z serwerem gry: ' + e.message });
+  // obecność: kto nie odezwał się od 30 s, jest offline
+  setInterval(() => {
+    if (!H) return;
+    let ch = false;
+    for (const p of H.players) {
+      if (p.id === S.me || !p.online) continue;
+      if (Date.now() - (S.seen.get(p.id) || 0) > 30000) { p.online = false; ch = true; markLeft(p) }
+    }
+    if (ch) hostBroadcast();
+  }, 5000);
+}
+function markLeft(p){
+  if (H.pickerId === p.id && (H.phase === 'draw' || H.phase === 'time')) H.feed.push({sys: true, text: p.name + ' wyszedł — host może powtórzyć turę albo przejść dalej.'});
 }
 
 function joinRoom(code){
-  const peer = new Peer();
-  peer.on('open', id => {
-    S.peer = peer; S.me = id; S.code = code; S.isHost = false;
-    const conn = peer.connect(PEER_PREFIX + code, {reliable: true});
-    const failT = setTimeout(() => { if (!S.hostConn) { $('landErr').textContent = 'Nie ma pokoju o kodzie ' + code + ' (albo host jest offline).'; peer.destroy() } }, 9000);
-    conn.on('open', () => {
-      clearTimeout(failT); S.hostConn = conn;
-      conn.send({t: 'join', name: S.name});
-      enterGame();
-    });
-    conn.on('data', clientHandle);
-    conn.on('close', () => { toast('Rozłączono z hostem', 6000); curtain('⚡', 'Host zamknął pokój albo straciłeś połączenie. <br><br><button class="pri" onclick="location.reload()">Połącz ponownie</button>') });
+  S.code = code; S.isHost = false;
+  S.me = sessionStorage.getItem('zk.me.' + code) || 'c_' + rid();
+  try { sessionStorage.setItem('zk.me.' + code, S.me) } catch {}
+  const mq = mqConnect({topic: topic(code, 'up'), payload: JSON.stringify({from: S.me, t: 'leave'}), qos: 1});
+  S.mq = mq;
+  let gotState = false, first = true;
+  const failT = setTimeout(() => {
+    if (!gotState) { $('landErr').textContent = 'Nie ma pokoju o kodzie ' + code + ' (albo host jest offline).'; $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz'; mq.end(true) }
+  }, 9000);
+  mq.on('connect', () => {
+    connLost(false);
+    mq.subscribe([topic(code, 'state'), topic(code, 'frame')], {qos: 1});
+    send({t: 'join', name: S.name});
+    first = false;
   });
-  peer.on('error', e => {
-    if (e.type === 'peer-unavailable') $('landErr').textContent = 'Nie ma pokoju o kodzie ' + code + '.';
-    else $('landErr').textContent = 'Błąd połączenia: ' + e.type;
+  mq.on('message', (t, payload) => {
+    const txt = payload.toString();
+    if (t.endsWith('/state')) {
+      if (!txt) { if (gotState) curtain('⚡', 'Host zamknął pokój albo stracił połączenie.<br><br><button class="pri" onclick="location.reload()">Spróbuj ponownie</button>'); return }
+      let m; try { m = JSON.parse(txt) } catch { return }
+      if (!gotState) { gotState = true; clearTimeout(failT); enterGame() }
+      applyState(m.s);
+    } else if (t.endsWith('/frame')) {
+      let m; try { m = JSON.parse(txt || '{}') } catch { return }
+      if (m.turn == null || m.turn === S.pub?.turn || !S.pub) showFrame(m.img || null);
+      S.lastFrame = m;
+    }
   });
+  mq.on('offline', () => connLost(true));
+  mq.on('error', e => { if (!gotState) $('landErr').textContent = 'Nie mogę połączyć się z serwerem gry: ' + e.message });
+  setInterval(() => send({t: 'ping'}), 10000);
 }
 
 function send(msg){
   if (S.isHost) hostHandle(S.me, msg);
-  else if (S.hostConn?.open) S.hostConn.send(msg);
+  else if (S.mq) S.mq.publish(topic(S.code, 'up'), JSON.stringify(Object.assign({from: S.me}, msg)), {qos: 1});
 }
 
 // ---------- logika hosta ----------
@@ -356,19 +408,18 @@ function pubState(){
 }
 function hostBroadcast(){
   const s = pubState();
-  for (const c of S.conns.values()) if (c.open) c.send({t: 'state', s});
+  S.mq?.publish(topic(S.code, 'state'), JSON.stringify({t: 'state', s}), {qos: 1, retain: true});
   applyState(s);
+  try { sessionStorage.setItem('zk.hostRoom', JSON.stringify({code: S.code, me: S.me, H})) } catch {} // żeby host mógł odświeżyć stronę i wrócić do pokoju
 }
-function hostSendFrame(to){
-  const m = {t: 'frame', img: H.frame};
-  if (to) { const c = S.conns.get(to); if (c?.open) c.send(m); return }
-  for (const c of S.conns.values()) if (c.open) c.send(m);
+function hostSendFrame(){
+  S.mq?.publish(topic(S.code, 'frame'), JSON.stringify({turn: H.turn, img: H.frame}), {qos: 1, retain: true});
   showFrame(H.frame);
 }
 function newTurn(pickerId){
   H.turn = (H.turn || 0) + 1;
   Object.assign(H, {phase: 'draw', pickerId, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
-  hostSendFrame(null);
+  hostSendFrame();
   hostBroadcast();
 }
 function nextPicker(){
@@ -381,6 +432,7 @@ function hostHandle(from, m){
   if (!m || typeof m !== 'object') return;
   const me = from === S.me;
   const pl = H.players.find(p => p.id === from);
+  if (pl && !pl.online && m.t !== 'leave' && m.t !== 'ping') { pl.online = true }
   switch (m.t){
     case 'join': {
       const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
@@ -388,9 +440,10 @@ function hostHandle(from, m){
       if (old) { if (H.pickerId === old.id) H.pickerId = from; old.id = from; old.online = true }
       else if (!pl) H.players.push({id: from, name, pts: 0, online: true});
       hostBroadcast();
-      if (H.frame && !me) hostSendFrame(from);
       break;
     }
+    case 'ping': if (pl && !pl.online) { pl.online = true; hostBroadcast() } break;
+    case 'leave': if (pl && pl.online) { pl.online = false; markLeft(pl); hostBroadcast() } break;
     case 'start': if (me && H.phase === 'lobby' && H.players.length) { H.round = 1; newTurn(H.players[0].id) } break;
     case 'film': // tylko osoba wybierająca, raz na turę
       if (from !== H.pickerId || H.phase !== 'draw' || !m.film?.id) return;
@@ -402,7 +455,7 @@ function hostHandle(from, m){
     case 'frame': // tylko osoba wybierająca, raz na turę
       if (from !== H.pickerId || H.phase !== 'time' || typeof m.img !== 'string') return;
       H.frame = m.img; H.frameNote = String(m.note || '').slice(0, 200); H.phase = 'guess';
-      hostSendFrame(null); hostBroadcast();
+      hostSendFrame(); hostBroadcast();
       break;
     case 'guess': {
       if (H.phase !== 'guess' || !pl || !H.film) return;
@@ -442,16 +495,11 @@ function buildHints(f){
   ].filter(Boolean);
 }
 
-// ---------- klient ----------
-function clientHandle(m){
-  if (m?.t === 'state') applyState(m.s);
-  else if (m?.t === 'frame') showFrame(m.img);
-}
-
 // ================= Widok =================
 function enterGame(){
   $('landing').classList.add('hidden'); $('game').classList.remove('hidden');
-  $('roomCode').textContent = S.code;
+  $('roomCode').textContent = S.code; $('roomCode2').textContent = S.code;
+  $('inviteLink').value = inviteUrl();
   history.replaceState(null, '', '?room=' + S.code);
 }
 function curtain(big, msg){
@@ -469,6 +517,8 @@ function applyState(s){
   const picker = s.players.find(p => p.id === s.pickerId);
   const iAmPicker = s.pickerId === S.me;
   if (prevTurn !== s.turn) { S.myFilm = null; S.loading = false; clearPlayer() }
+  if (!S.isHost && (s.phase === 'guess' || s.phase === 'reveal') && S.lastFrame?.turn === s.turn && S.lastFrame.img && $('still').classList.contains('hidden')) showFrame(S.lastFrame.img);
+  if (!S.isHost && (s.phase === 'draw' || s.phase === 'time' || s.phase === 'lobby')) showFrame(null);
 
   $('roundPill').textContent = s.round ? 'Runda ' + s.round : 'Lobby';
 
@@ -499,7 +549,7 @@ function applyState(s){
   const pn = esc(picker?.name || '?');
   if (s.phase === 'lobby') {
     showFrame(null);
-    curtain('🎬', S.isHost ? 'Wyślij znajomym link (🔗 Kopiuj link) i kliknij <b>Start gry</b>, gdy wszyscy będą.' : 'Czekamy, aż host wystartuje grę…');
+    curtain('🎬', S.isHost ? 'Wyślij znajomym link z karty <b>Zaproś znajomych</b> i kliknij <b>Start gry</b>, gdy wszyscy będą.' : 'Czekamy, aż host wystartuje grę…');
   } else if (s.phase === 'draw') {
     curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film…`);
   } else if (s.phase === 'time') {
@@ -512,8 +562,8 @@ function applyState(s){
 
   // zgadywanie
   const canGuess = s.phase === 'guess' && !!me;
-  $('guess').disabled = !canGuess; $('btnGuess').disabled = !canGuess;
-  $('guess').placeholder = canGuess ? 'Wpisz tytuł filmu…' : (s.phase === 'reveal' ? 'Tura zakończona' : 'Poczekaj na klatkę…');
+  $('guess').disabled = !canGuess;
+  $('guess').placeholder = canGuess ? 'Wpisz tytuł i wybierz film z listy…' : (s.phase === 'reveal' ? 'Tura zakończona' : 'Poczekaj na klatkę…');
   $('hints').innerHTML = s.hints.map(h => `<span class="hint">${esc(h)}</span>`).join('') + (s.frameNote ? `<span class="hint" style="background:transparent;border-color:var(--line2)">${esc(s.frameNote)}</span>` : '');
   $('feed').innerHTML = s.feed.slice().reverse().map(f => f.sys ? `<div class="muted">${esc(f.text)}</div>`
       : f.ok ? `<div class="ok">✔ ${esc(f.text)}</div>`
@@ -534,13 +584,13 @@ $('btnDraw').onclick = async () => {
   const s = S.pub; if (!s || s.pickerId !== S.me || s.phase !== 'draw' || S.drawing) return;
   S.drawing = true; $('btnDraw').disabled = true; $('btnDraw').textContent = 'Losuję…';
   try {
-    const pool = s.settings?.pool || 'popular', pages = Math.max(1, +s.settings?.pages || 10);
+    const pool = POOLS[s.settings?.pool] ? s.settings.pool : 'known';
     let film = null;
     // tylko filmy, które wyszły co najmniej ~4 miesiące temu (są już w playerach) i mają trochę ocen
     const cutoff = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
     for (let tries = 0; tries < 8 && !film; tries++) {
-      const list = (await poolRequest(pool, 1 + Math.floor(Math.random() * pages))).results
-        .filter(m => !m.adult && m.release_date && m.release_date <= cutoff && m.vote_count >= 100);
+      const list = (await poolRequest(pool)).results
+        .filter(m => !m.adult && m.release_date && m.release_date <= cutoff && m.vote_count >= (pool === 'pl' ? 30 : 100));
       if (!list.length) continue;
       const pick = list[Math.floor(Math.random() * list.length)];
       const f = await tmdb('/movie/' + pick.id, {append_to_response: 'credits'});
@@ -714,7 +764,7 @@ window.addEventListener('message', e => {
     const moved = Math.round(me.target - me.asked);
     const note = moved ? 'klatka przesunięta o ' + (moved > 0 ? '+' : '−') + fmtTime(Math.abs(moved)) + ' (trafiło w napisy)' : '';
     S.loading = false; S.loadedTurn = S.pub.turn;
-    send({t: 'frame', img: grabCanvas.toDataURL('image/jpeg', 0.86), note});
+    send({t: 'frame', img: grabCanvas.toDataURL('image/jpeg', 0.82), note});
   }).catch(err => { me.grabbing = false; loadFailed('Błąd łapania klatki: ' + err.message) });
 });
 
@@ -734,7 +784,7 @@ $('guess').oninput = () => {
         li.innerHTML = `${m.poster_path ? `<img src="${img(m.poster_path, 'w92')}" alt="">` : '<img alt="">'}<span><b></b> <span class="muted"></span></span>`;
         li.querySelector('b').textContent = m.title;
         li.querySelector('.muted').textContent = m.release_date ? '(' + m.release_date.slice(0, 4) + ')' : '';
-        li.onclick = () => { $('guess').value = m.title; $('guess').dataset.id = m.id; ul.classList.add('hidden'); $('btnGuess').click() };
+        li.onclick = () => { $('guess').value = m.title; $('guess').dataset.id = m.id; ul.classList.add('hidden'); submitGuess() };
         ul.appendChild(li);
       });
       ul.classList.toggle('hidden', !r.results.length);
@@ -747,11 +797,11 @@ $('guess').onkeydown = e => {
     e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
     items.forEach((li, i) => li.classList.toggle('act', i === sugIdx));
   } else if (e.key === 'Enter') {
-    if (open && sugIdx >= 0) items[sugIdx].click(); else $('btnGuess').click();
+    if (open && items.length) items[Math.max(0, sugIdx)].click(); else submitGuess();
   } else if (e.key === 'Escape') $('sugList').classList.add('hidden');
 };
 document.addEventListener('click', e => { if (!e.target.closest('.sug')) $('sugList').classList.add('hidden') });
-$('btnGuess').onclick = () => {
+function submitGuess(){
   const text = $('guess').value.trim(); if (!text) return;
   send({t: 'guess', text, id: +$('guess').dataset.id || 0});
   $('guess').value = ''; delete $('guess').dataset.id; $('sugList').classList.add('hidden');
@@ -763,22 +813,30 @@ $('btnHint').onclick = () => send({t: 'hint'});
 $('btnReveal').onclick = () => send({t: 'reveal'});
 $('btnNext').onclick = () => send({t: 'next'});
 $('btnRedo').onclick = () => { if (confirm('Powtórzyć turę? Osoba wybierająca losuje film jeszcze raz.')) send({t: 'redo'}) };
-$('btnCopy').onclick = async () => {
-  const url = location.origin + location.pathname + '?room=' + S.code;
-  try { await navigator.clipboard.writeText(url); toast('Skopiowano link do pokoju') } catch { prompt('Link do pokoju:', url) }
-};
+function inviteUrl(){ return location.origin + location.pathname + '?room=' + S.code }
+async function copyInvite(btn){
+  const url = inviteUrl(), inp = $('inviteLink');
+  let ok = false;
+  try { await navigator.clipboard.writeText(url); ok = true } catch {}
+  if (!ok) { try { inp.focus(); inp.select(); inp.setSelectionRange(0, url.length); ok = document.execCommand('copy') } catch {} }
+  if (ok) { const t = btn.textContent; btn.textContent = '✓ Skopiowano'; setTimeout(() => btn.textContent = t, 1800) }
+  else { inp.focus(); inp.select(); toast('Zaznaczyłem link — skopiuj Ctrl+C') }
+}
+$('btnCopy').onclick = () => copyInvite($('btnCopy'));
+$('btnCopy2').onclick = () => copyInvite($('btnCopy2'));
 $('btnSettings').onclick = () => {
   $('hostSettings').classList.toggle('hidden', !S.isHost);
   $('dlgNote').textContent = S.isHost ? '' : 'Pulę filmów ustawia host.';
-  const st = S.pub?.settings || {pool: 'popular', pages: 10};
-  $('sPool').value = st.pool; $('sPages').value = st.pages;
+  const st = S.pub?.settings || {pool: 'known'};
+  $('sPool').innerHTML = Object.entries(POOLS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('');
+  $('sPool').value = POOLS[st.pool] ? st.pool : 'known';
   $('sProv').value = local.prov; $('sKey').value = local.key;
   $('dlg').showModal();
 };
 $('btnSave').onclick = () => {
   local = {prov: $('sProv').value.trim() || DEFAULTS.prov, key: $('sKey').value.trim() || DEFAULTS.key};
   store.set('local', local);
-  if (S.isHost) send({t: 'settings', settings: {pool: $('sPool').value, pages: Math.max(1, +$('sPages').value || 10)}});
+  if (S.isHost) send({t: 'settings', settings: {pool: $('sPool').value}});
   $('dlg').close();
 };
 
@@ -797,12 +855,13 @@ $('btnJoin').onclick = () => {
   const code = $('inCode').value.trim().toUpperCase();
   if (code.length < 5) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
   $('btnJoin').disabled = true; $('btnJoin').textContent = 'Łączę…';
-  setTimeout(() => { $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz' }, 9500);
-  joinRoom(code);
+  let hr = null; try { hr = JSON.parse(sessionStorage.getItem('zk.hostRoom') || 'null') } catch {}
+  if (hr?.code === code && hr.H) createRoom(hr); else joinRoom(code);
 };
 $('inCode').onkeydown = e => { if (e.key === 'Enter') $('btnJoin').click() };
 $('inName').onkeydown = e => { if (e.key === 'Enter') (params.get('room') ? $('btnJoin') : $('btnCreate')).click() };
 window.addEventListener('beforeunload', e => { if (S.isHost && H?.players.length > 1) { e.preventDefault(); e.returnValue = '' } });
+window.addEventListener('pagehide', () => { if (!S.isHost && S.mq) send({t: 'leave'}) });
 </script>
 </body>
 </html>
