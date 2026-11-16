@@ -61,9 +61,15 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:20p
 @media(max-width:960px){main{grid-template-columns:1fr;padding:16px}}
 .stack{display:grid;gap:16px;align-content:start}
 .screen{position:relative;aspect-ratio:16/9;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);box-shadow:0 30px 80px -40px rgba(0,0,0,.9)}
-#frameHost{position:absolute;inset:0;isolation:isolate;transform-style:flat;z-index:1}
-#frameHost iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
-#still{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;background:#000}
+#frameHost{position:absolute;inset:0;isolation:isolate;transform-style:flat;z-index:1;overflow:hidden}
+/* player jest o 40% wyższy niż ekran: obraz filmu zostaje w środku, a pasek sterowania (dół) i logo (góra) wypadają poza kadr */
+#frameHost iframe{position:absolute;left:0;top:-20%;width:100%;height:140%;border:0}
+#still{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;background:#000;transform-origin:0 0;cursor:zoom-in;touch-action:none;user-select:none;-webkit-user-drag:none}
+#still.zoomed{cursor:grab}
+#still.drag{cursor:grabbing}
+.zoomctl{position:absolute;right:12px;bottom:12px;z-index:6;display:flex;gap:6px}
+.zoomctl button{width:38px;height:38px;padding:0;border-radius:10px;background:rgba(10,10,14,.7);backdrop-filter:blur(6px);font-size:18px;line-height:1}
+.zoomhint{position:absolute;left:12px;bottom:14px;z-index:6;font-size:12px;color:#cfcfd8;background:rgba(10,10,14,.6);padding:4px 8px;border-radius:8px;pointer-events:none}
 .curtain{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px;
   background:radial-gradient(600px 300px at 50% 40%,rgba(255,181,71,.08),transparent 70%),#050507}
 .curtain .big{font-family:"Space Grotesk";font-size:clamp(36px,7vw,72px);font-weight:700;letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
@@ -122,7 +128,7 @@ dialog input,dialog select{width:100%}
 <!-- ============ LANDING ============ -->
 <section id="landing" class="landing">
   <h1>Zgadnij <span>Klatkę</span></h1>
-  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 7)</span></p>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 8)</span></p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
     <button class="pri" id="btnCreate">Utwórz pokój</button>
@@ -150,7 +156,13 @@ dialog input,dialog select{width:100%}
     <div class="stack">
       <div class="screen" id="screen">
         <div id="frameHost"></div>
-        <img id="still" class="hidden" alt="">
+        <img id="still" class="hidden" alt="" draggable="false">
+        <div class="zoomctl hidden" id="zoomCtl">
+          <button id="zIn" title="Przybliż">+</button>
+          <button id="zOut" title="Oddal">−</button>
+          <button id="zReset" title="Cały kadr">⤢</button>
+        </div>
+        <div class="zoomhint hidden" id="zoomHint">kółko myszy = zoom · przeciągnij = przesuń · 2× klik = reset</div>
         <div class="curtain" id="curtain">
           <div class="big" id="curtainBig">?</div>
           <div class="msg" id="curtainMsg"></div>
@@ -229,7 +241,7 @@ dialog input,dialog select{width:100%}
           <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
         </div>
       </div>
-      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 7</span></p>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 8</span></p>
     </aside>
   </main>
 </section>
@@ -525,7 +537,45 @@ function curtain(big, msg){
   $('curtain').classList.remove('hidden');
   $('curtainBig').textContent = big; $('curtainMsg').innerHTML = msg;
 }
+// ---- przybliżanie (każdy u siebie) ----
+const Z = {s: 1, x: 0, y: 0};
+function applyZoom(){
+  const el = $('still'), r = $('screen').getBoundingClientRect();
+  Z.x = Math.min(0, Math.max(r.width - r.width * Z.s, Z.x));
+  Z.y = Math.min(0, Math.max(r.height - r.height * Z.s, Z.y));
+  el.style.transform = `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`;
+  el.classList.toggle('zoomed', Z.s > 1);
+}
+function zoomAt(ns, mx, my){
+  const r = $('screen').getBoundingClientRect();
+  if (mx == null) { mx = r.width / 2; my = r.height / 2 }
+  ns = Math.min(8, Math.max(1, ns));
+  Z.x = mx - (mx - Z.x) * ns / Z.s; Z.y = my - (my - Z.y) * ns / Z.s; Z.s = ns;
+  applyZoom();
+}
+function resetZoom(){ Z.s = 1; Z.x = 0; Z.y = 0; applyZoom() }
+$('screen').addEventListener('wheel', e => {
+  if ($('still').classList.contains('hidden') || !$('curtain').classList.contains('hidden')) return;
+  e.preventDefault();
+  const r = $('screen').getBoundingClientRect();
+  zoomAt(Z.s * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX - r.left, e.clientY - r.top);
+}, {passive: false});
+(() => {
+  let drag = null;
+  const el = $('still');
+  el.addEventListener('pointerdown', e => { if (Z.s <= 1) return; drag = {x: e.clientX - Z.x, y: e.clientY - Z.y}; el.setPointerCapture(e.pointerId); el.classList.add('drag') });
+  el.addEventListener('pointermove', e => { if (!drag) return; Z.x = e.clientX - drag.x; Z.y = e.clientY - drag.y; applyZoom() });
+  const end = () => { drag = null; el.classList.remove('drag') };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  el.addEventListener('dblclick', e => { if (Z.s > 1) resetZoom(); else { const r = $('screen').getBoundingClientRect(); zoomAt(2.5, e.clientX - r.left, e.clientY - r.top) } });
+})();
+$('zIn').onclick = () => zoomAt(Z.s * 1.5);
+$('zOut').onclick = () => zoomAt(Z.s / 1.5);
+$('zReset').onclick = resetZoom;
+window.addEventListener('resize', () => applyZoom());
 function showFrame(src){
+  resetZoom();
+  $('zoomCtl').classList.toggle('hidden', !src); $('zoomHint').classList.toggle('hidden', !src);
   if (src) { $('still').src = src; $('still').classList.remove('hidden'); $('curtain').classList.add('hidden') }
   else { $('still').classList.add('hidden'); $('still').removeAttribute('src') }
 }
@@ -536,6 +586,9 @@ function applyState(s){
   const picker = s.players.find(p => p.id === s.pickerId);
   const iAmPicker = s.pickerId === S.me;
   if (prevTurn !== s.turn) { S.myFilm = null; S.loading = false; clearPlayer() }
+  if (!S.myFilm && s.pickerId === S.me && s.phase === 'time') {
+    try { const m = JSON.parse(sessionStorage.getItem('zk.myFilm') || 'null'); if (m?.code === S.code && m.turn === s.turn) { S.myFilm = m.film; S.drewTurn = s.turn } } catch {}
+  }
   if (!S.isHost && (s.phase === 'guess' || s.phase === 'reveal') && S.lastFrame?.turn === s.turn && S.lastFrame.img && $('still').classList.contains('hidden')) showFrame(S.lastFrame.img);
   if (!S.isHost && (s.phase === 'draw' || s.phase === 'time' || s.phase === 'lobby')) showFrame(null);
 
@@ -633,6 +686,7 @@ $('btnDraw').onclick = async () => {
     }
     if (!film) throw new Error('nie udało się wylosować');
     S.myFilm = film; S.drewTurn = s.turn;
+    try { sessionStorage.setItem('zk.myFilm', JSON.stringify({code: S.code, turn: s.turn, film})) } catch {}
     send({t: 'film', film});
   } catch (e) { toast('Błąd losowania: ' + e.message) }
   S.drawing = false; $('btnDraw').textContent = '🎲 Wylosuj film'; $('btnDraw').disabled = S.drewTurn === S.pub?.turn;
@@ -665,6 +719,7 @@ $('btnRandTime').onclick = () => { const {min, max} = curRange(); setTimeIn(min 
 // ---- łapanie klatki ----
 $('btnLoad').onclick = async () => {
   const s = S.pub;
+  if (s?.pickerId === S.me && s.phase === 'time' && !S.myFilm) { toast('Nie pamiętam wylosowanego filmu (inna karta/przeglądarka) — host może kliknąć „Powtórz turę”.', 6000); return }
   if (!s || s.pickerId !== S.me || s.phase !== 'time' || !S.myFilm || S.loading || S.loadedTurn === s.turn) return;
   const t = clampT(getTimeIn()); setTimeIn(t);
   if (!cap) { const ok = await enableCapture(); if (!ok) return }
@@ -701,7 +756,7 @@ function clearPlayer(){
 function loadAt(t, asked, attempt, pi = 0){
   clearPlayer();
   const f = document.createElement('iframe');
-  f.allow = 'autoplay; fullscreen; encrypted-media';
+  f.allow = 'fullscreen; encrypted-media'; // bez „autoplay” → player rusza wyciszony
   f.referrerPolicy = 'origin';
   f.src = providers()[pi].replaceAll('{id}', S.myFilm.id).replaceAll('{t}', t);
   $('frameHost').appendChild(f);
