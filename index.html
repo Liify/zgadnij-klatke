@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zgadnij Klatkę</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{
+  --bg:#08080b; --bg2:#0f0f14; --card:rgba(255,255,255,.035); --card2:rgba(255,255,255,.06);
+  --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.14);
+  --text:#f4f4f6; --mute:#8d8d9a; --acc:#ffb547; --acc2:#ff5e7e; --ok:#3ddc97; --bad:#ff5c6c;
+  --grad:linear-gradient(135deg,var(--acc),var(--acc2));
+  --r:16px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:radial-gradient(1200px 600px at 10% -10%,rgba(255,181,71,.10),transparent 60%),radial-gradient(900px 500px at 110% 0%,rgba(255,94,126,.10),transparent 60%),var(--bg);
+  color:var(--text);font:15px/1.5 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,h3,.brand{font-family:"Space Grotesk",Inter,sans-serif}
+.hidden{display:none!important}
+button,input,select{font:inherit;color:var(--text)}
+button{cursor:pointer;border:1px solid var(--line2);background:var(--card2);border-radius:12px;padding:10px 16px;font-weight:600;transition:.15s}
+button:hover:not(:disabled){border-color:rgba(255,255,255,.3);background:rgba(255,255,255,.09)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.pri{background:var(--grad);border:0;color:#160b05;box-shadow:0 8px 24px -10px rgba(255,120,90,.7)}
+button.pri:hover:not(:disabled){filter:brightness(1.08);background:var(--grad)}
+button.ghost{background:transparent}
+button.sm{padding:6px 10px;font-size:13px;border-radius:9px}
+input,select{background:rgba(0,0,0,.35);border:1px solid var(--line2);border-radius:12px;padding:10px 14px;outline:none}
+input:focus,select:focus{border-color:var(--acc)}
+.muted{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:18px;backdrop-filter:blur(8px)}
+.label{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);font-weight:600;margin:0 0 12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+
+/* ---- top bar ---- */
+header{display:flex;align-items:center;gap:14px;padding:16px 24px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(8,8,11,.75);backdrop-filter:blur(14px);z-index:20}
+.brand{font-size:20px;font-weight:700;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.brand .dot{width:28px;height:28px;border-radius:8px;background:var(--grad);display:grid;place-items:center;color:#160b05;font-size:15px}
+.brand b{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+header .sp{flex:1}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line2);border-radius:999px;padding:6px 12px;font-size:13px;background:var(--card)}
+.pill code{font-family:"Space Grotesk";font-weight:700;letter-spacing:.15em;color:var(--acc)}
+
+/* ---- landing ---- */
+.landing{max-width:440px;margin:9vh auto;padding:0 16px}
+.landing h1{font-size:44px;line-height:1.05;margin:0 0 10px;letter-spacing:-.02em}
+.landing h1 span{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.landing p{margin:0 0 26px}
+.landing .card{display:grid;gap:12px}
+.landing input{width:100%}
+.or{display:flex;align-items:center;gap:10px;color:var(--mute);font-size:12px;text-transform:uppercase;letter-spacing:.12em}
+.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* ---- game layout ---- */
+main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:20px 24px;max-width:1440px;margin:auto}
+@media(max-width:960px){main{grid-template-columns:1fr;padding:16px}}
+.stack{display:grid;gap:16px;align-content:start}
+.screen{position:relative;aspect-ratio:16/9;background:#000;border-radius:var(--r);overflow:hidden;border:1px solid var(--line);box-shadow:0 30px 80px -40px rgba(0,0,0,.9)}
+#frameHost{position:absolute;inset:0;isolation:isolate;transform-style:flat;z-index:1}
+#frameHost iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+#still{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:2;background:#000}
+.curtain{position:absolute;inset:0;z-index:5;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;text-align:center;padding:24px;
+  background:radial-gradient(600px 300px at 50% 40%,rgba(255,181,71,.08),transparent 70%),#050507}
+.curtain .big{font-family:"Space Grotesk";font-size:clamp(36px,7vw,72px);font-weight:700;letter-spacing:-.02em;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;font-variant-numeric:tabular-nums}
+.curtain .msg{max-width:520px;color:#cfcfd8}
+.spin{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.15);border-top-color:var(--acc);animation:sp 1s linear infinite;display:inline-block;vertical-align:middle;margin-right:8px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.turnbadge{position:absolute;left:14px;top:14px;z-index:6}
+
+/* time picker */
+.timein{display:flex;align-items:center;gap:6px}
+.timein input{width:76px;text-align:center;font:700 30px "Space Grotesk";padding:8px 4px;font-variant-numeric:tabular-nums}
+.timein span{font:700 28px "Space Grotesk";color:var(--mute)}
+input[type=range]{flex:1;min-width:160px;padding:0;border:0;background:transparent;accent-color:var(--acc)}
+
+/* guess */
+.sug{position:relative;flex:1;min-width:220px}
+.sug input{width:100%}
+.sug ul{position:absolute;z-index:30;left:0;right:0;top:calc(100% + 6px);margin:0;padding:6px;list-style:none;background:#14141b;border:1px solid var(--line2);border-radius:12px;max-height:300px;overflow:auto;box-shadow:0 20px 40px -10px #000}
+.sug li{padding:8px 10px;border-radius:8px;cursor:pointer;display:flex;gap:10px;align-items:center}
+.sug li img{width:28px;height:42px;object-fit:cover;border-radius:4px;background:#222}
+.sug li:hover,.sug li.act{background:rgba(255,255,255,.07)}
+.feed{display:grid;gap:6px;margin-top:12px;max-height:180px;overflow:auto}
+.feed div{font-size:14px;padding:6px 10px;border-radius:8px;background:rgba(255,255,255,.03)}
+.feed .ok{color:var(--ok);background:rgba(61,220,151,.08)}
+.feed .bad s{color:var(--mute)}
+.hints{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.hint{font-size:13px;padding:5px 10px;border-radius:999px;background:rgba(255,181,71,.1);border:1px solid rgba(255,181,71,.25)}
+
+/* reveal */
+.reveal{display:flex;gap:16px;align-items:flex-start}
+.reveal img{width:110px;border-radius:10px;box-shadow:0 10px 30px -10px #000}
+.reveal h3{margin:0 0 4px;font-size:24px;letter-spacing:-.01em}
+
+/* players */
+.players{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.players li{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:12px;background:rgba(255,255,255,.025);border:1px solid transparent}
+.players li.picker{border-color:rgba(255,181,71,.4);background:rgba(255,181,71,.06)}
+.players li.off{opacity:.4}
+.av{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;color:#111;flex:none}
+.players .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.players .tag{font-size:11px;color:var(--mute);margin-left:6px}
+.players .pts{font:700 18px "Space Grotesk";color:var(--acc);min-width:24px;text-align:right}
+.hostctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.hostctl .wide{grid-column:1/-1}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#16161d;border:1px solid var(--line2);padding:10px 16px;border-radius:12px;z-index:100;box-shadow:0 20px 40px -10px #000}
+
+dialog{background:#121218;color:var(--text);border:1px solid var(--line2);border-radius:var(--r);max-width:520px;width:92%;padding:22px}
+dialog::backdrop{background:rgba(0,0,0,.6);backdrop-filter:blur(4px)}
+dialog label{display:block;margin:12px 0 6px;color:var(--mute);font-size:13px}
+dialog input,dialog select{width:100%}
+</style>
+</head>
+<body>
+
+<!-- ============ LANDING ============ -->
+<section id="landing" class="landing">
+  <h1>Zgadnij <span>Klatkę</span></h1>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce.</p>
+  <div class="card">
+    <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
+    <button class="pri" id="btnCreate">Utwórz pokój</button>
+    <div class="or">albo</div>
+    <div class="row">
+      <input id="inCode" placeholder="KOD" maxlength="5" style="flex:1;text-transform:uppercase;letter-spacing:.2em;font-weight:700">
+      <button id="btnJoin">Dołącz</button>
+    </div>
+    <div id="landErr" class="muted" style="color:var(--bad)"></div>
+  </div>
+</section>
+
+<!-- ============ GAME ============ -->
+<section id="game" class="hidden">
+  <header>
+    <div class="brand"><span class="dot">▶</span> Zgadnij&nbsp;<b>Klatkę</b></div>
+    <div class="sp"></div>
+    <span class="pill muted" id="roundPill">Runda 0</span>
+    <span class="pill">Pokój <code id="roomCode">—</code></span>
+    <button class="sm" id="btnCopy">🔗 Kopiuj link</button>
+    <button class="sm ghost" id="btnSettings" title="Ustawienia">⚙</button>
+  </header>
+
+  <main>
+    <div class="stack">
+      <div class="screen" id="screen">
+        <div id="frameHost"></div>
+        <img id="still" class="hidden" alt="">
+        <div class="curtain" id="curtain">
+          <div class="big" id="curtainBig">?</div>
+          <div class="msg" id="curtainMsg"></div>
+        </div>
+      </div>
+
+      <!-- panel osoby wybierającej -->
+      <div class="card hidden" id="pickPanel">
+        <p class="label" id="pickTitle">Twoja kolej</p>
+        <div id="pickDraw" class="row">
+          <button class="pri" id="btnDraw">🎲 Wylosuj film</button>
+          <span class="muted">Film zostanie wylosowany w tajemnicy — nawet ty go nie zobaczysz.</span>
+        </div>
+        <div id="pickTime" class="hidden">
+          <div class="row" style="margin-bottom:12px">
+            <div class="timein">
+              <input id="tH" type="number" min="0" max="5" value="0" aria-label="godziny"><span>:</span>
+              <input id="tM" type="number" min="0" max="59" value="30" aria-label="minuty"><span>:</span>
+              <input id="tS" type="number" min="0" max="59" value="0" aria-label="sekundy">
+            </div>
+            <button id="btnRandTime">🎲 losowy moment</button>
+          </div>
+          <div class="row" style="margin-bottom:14px">
+            <input id="tRange" type="range" min="0" max="7200" step="1" value="1800">
+            <span class="muted" id="rangeInfo"></span>
+          </div>
+          <div class="row">
+            <button class="pri" id="btnLoad">📸 Złap klatkę</button>
+            <span class="muted" id="loadNote">Za pierwszym razem Chrome zapyta o udostępnienie tej karty — kliknij „Udostępnij”.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- zgadywanie -->
+      <div class="card" id="guessCard">
+        <p class="label">Zgadywanie</p>
+        <div class="row">
+          <div class="sug">
+            <input id="guess" placeholder="Wpisz tytuł filmu…" autocomplete="off" disabled>
+            <ul id="sugList" class="hidden"></ul>
+          </div>
+          <button class="pri" id="btnGuess" disabled>Zgaduję</button>
+        </div>
+        <div class="hints" id="hints"></div>
+        <div class="feed" id="feed"></div>
+        <div id="revealBox" class="hidden" style="margin-top:16px"></div>
+      </div>
+    </div>
+
+    <aside class="stack">
+      <div class="card">
+        <p class="label">Gracze</p>
+        <ul class="players" id="plist"></ul>
+      </div>
+      <div class="card hidden" id="hostCard">
+        <p class="label">Panel hosta</p>
+        <div class="hostctl">
+          <button class="pri wide" id="btnStart">▶ Start gry</button>
+          <button id="btnHint">💡 Podpowiedź</button>
+          <button id="btnReveal">🎞 Odkryj</button>
+          <button class="pri wide" id="btnNext">Następna tura →</button>
+          <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
+        </div>
+      </div>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.</p>
+    </aside>
+  </main>
+</section>
+
+<dialog id="dlg">
+  <h2 style="margin:0 0 4px">Ustawienia</h2>
+  <p class="muted" style="margin:0" id="dlgNote"></p>
+  <div id="hostSettings">
+    <label>Pula filmów</label>
+    <select id="sPool">
+      <option value="popular">Popularne</option>
+      <option value="top_rated">Najwyżej oceniane</option>
+      <option value="discover_pl">Polskie filmy</option>
+      <option value="classics">Klasyki (przed 2000)</option>
+    </select>
+    <label>Ile stron puli (1 strona = 20 filmów)</label>
+    <input id="sPages" type="number" min="1" max="50" value="10">
+  </div>
+  <label>Źródło playera ({id} = TMDB id, {t} = sekundy)</label>
+  <input id="sProv">
+  <label>Klucz TMDB API</label>
+  <input id="sKey">
+  <div class="row" style="margin-top:18px;justify-content:flex-end">
+    <button class="ghost" onclick="this.closest('dialog').close()">Anuluj</button>
+    <button class="pri" id="btnSave">Zapisz</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+// ================= Konfiguracja =================
+const DEFAULTS = {
+  key: 'USUNIETO',
+  prov: 'https://vidfast.vc/movie/{id}?startAt={t}&autoPlay=true&title=false&poster=false'
+};
+const PEER_PREFIX = 'zgadnij-klatke-v1-';
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try { const v = localStorage.getItem('zk.' + k); return v ? JSON.parse(v) : d } catch { return d } },
+  set(k, v){ try { localStorage.setItem('zk.' + k, JSON.stringify(v)) } catch {} }
+};
+let local = Object.assign({}, DEFAULTS, store.get('local', {}));
+
+// ================= TMDB =================
+async function tmdb(path, params = {}){
+  const u = new URL('https://api.themoviedb.org/3' + path);
+  u.searchParams.set('api_key', local.key);
+  u.searchParams.set('language', 'pl-PL');
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  const r = await fetch(u);
+  if (!r.ok) throw new Error('TMDB ' + r.status);
+  return r.json();
+}
+const img = (p, s = 'w500') => p ? 'https://image.tmdb.org/t/p/' + s + p : '';
+function poolRequest(pool, page){
+  switch (pool){
+    case 'top_rated': return tmdb('/movie/top_rated', {page});
+    case 'discover_pl': return tmdb('/discover/movie', {page, with_original_language: 'pl', sort_by: 'popularity.desc', 'vote_count.gte': 50});
+    case 'classics': return tmdb('/discover/movie', {page, 'primary_release_date.lte': '1999-12-31', sort_by: 'vote_count.desc'});
+    default: return tmdb('/movie/popular', {page});
+  }
+}
+
+// ================= Utils =================
+function fmtTime(t){ t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? h + ':' : '') + String(m).padStart(h ? 2 : 1, '0') + ':' + String(s).padStart(2, '0') }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])) }
+const norm = s => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ł/g, 'l').replace(/[^a-z0-9]+/g, ' ').trim();
+function toast(msg, ms = 2500){ const t = $('toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add('hidden'), ms) }
+const COLORS = ['#ffb547','#ff5e7e','#7c9cff','#3ddc97','#c58cff','#5fd4ff','#ff8f5e','#e6e66a'];
+const colorOf = name => COLORS[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+// Bez napisów: odcinamy początek (logo, napisy początkowe) i koniec (napisy końcowe)
+function rangeFor(runtimeMin){
+  const R = (runtimeMin || 0) * 60;
+  if (!R) return {min: 150, max: 2 * 3600};
+  const min = Math.min(150, Math.floor(R * 0.1));
+  const max = Math.floor(R - Math.max(300, R * 0.07));
+  return {min, max: Math.max(min + 60, max)};
+}
+
+// ================= Sieć (PeerJS) =================
+// Host trzyma pełny stan gry (łącznie z tajnym filmem). Reszta dostaje tylko stan publiczny.
+const S = {me: null, name: '', code: null, isHost: false, peer: null, conns: new Map(), hostConn: null, pub: null, myFilm: null, loadedRound: -1, drewRound: -1};
+let H = null; // stan hosta
+
+function newCode(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s }
+
+function createRoom(){
+  const code = newCode();
+  const peer = new Peer(PEER_PREFIX + code);
+  peer.on('open', id => {
+    S.peer = peer; S.me = id; S.code = code; S.isHost = true;
+    H = {players: [], round: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
+         hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: store.get('hostSettings', {pool: 'popular', pages: 10})};
+    hostHandle(id, {t: 'join', name: S.name});
+    enterGame();
+  });
+  peer.on('connection', conn => {
+    conn.on('open', () => S.conns.set(conn.peer, conn));
+    conn.on('data', m => hostHandle(conn.peer, m));
+    conn.on('close', () => { S.conns.delete(conn.peer); const p = H.players.find(p => p.id === conn.peer); if (p) { p.online = false; if (H.pickerId === p.id && H.phase !== 'reveal') H.feed.push({sys: true, text: p.name + ' wyszedł — host może powtórzyć turę albo przejść dalej.'}); hostBroadcast() } });
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id') { peer.destroy(); createRoom(); return }
+    console.warn(e); if (!S.me) $('landErr').textContent = 'Błąd połączenia: ' + e.type;
+  });
+}
+
+function joinRoom(code){
+  const peer = new Peer();
+  peer.on('open', id => {
+    S.peer = peer; S.me = id; S.code = code; S.isHost = false;
+    const conn = peer.connect(PEER_PREFIX + code, {reliable: true});
+    const failT = setTimeout(() => { if (!S.hostConn) { $('landErr').textContent = 'Nie ma pokoju o kodzie ' + code + ' (albo host jest offline).'; peer.destroy() } }, 9000);
+    conn.on('open', () => {
+      clearTimeout(failT); S.hostConn = conn;
+      conn.send({t: 'join', name: S.name});
+      enterGame();
+    });
+    conn.on('data', clientHandle);
+    conn.on('close', () => { toast('Rozłączono z hostem', 6000); curtain('⚡', 'Host zamknął pokój albo straciłeś połączenie. <br><br><button class="pri" onclick="location.reload()">Połącz ponownie</button>') });
+  });
+  peer.on('error', e => {
+    if (e.type === 'peer-unavailable') $('landErr').textContent = 'Nie ma pokoju o kodzie ' + code + '.';
+    else $('landErr').textContent = 'Błąd połączenia: ' + e.type;
+  });
+}
+
+function send(msg){
+  if (S.isHost) hostHandle(S.me, msg);
+  else if (S.hostConn?.open) S.hostConn.send(msg);
+}
+
+// ---------- logika hosta ----------
+function pubState(){
+  return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
+          runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
+          feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings};
+}
+function hostBroadcast(){
+  const s = pubState();
+  for (const c of S.conns.values()) if (c.open) c.send({t: 'state', s});
+  applyState(s);
+}
+function hostSendFrame(to){
+  const m = {t: 'frame', img: H.frame};
+  if (to) { const c = S.conns.get(to); if (c?.open) c.send(m); return }
+  for (const c of S.conns.values()) if (c.open) c.send(m);
+  showFrame(H.frame);
+}
+function newTurn(pickerId){
+  H.turn = (H.turn || 0) + 1;
+  Object.assign(H, {phase: 'draw', pickerId, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
+  hostSendFrame(null);
+  hostBroadcast();
+}
+function nextPicker(){
+  const online = H.players.filter(p => p.online);
+  if (!online.length) return null;
+  const i = online.findIndex(p => p.id === H.pickerId);
+  return online[(i + 1) % online.length].id;
+}
+function hostHandle(from, m){
+  if (!m || typeof m !== 'object') return;
+  const me = from === S.me;
+  const pl = H.players.find(p => p.id === from);
+  switch (m.t){
+    case 'join': {
+      const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
+      const old = H.players.find(p => !p.online && p.name === name);
+      if (old) { if (H.pickerId === old.id) H.pickerId = from; old.id = from; old.online = true }
+      else if (!pl) H.players.push({id: from, name, pts: 0, online: true});
+      hostBroadcast();
+      if (H.frame && !me) hostSendFrame(from);
+      break;
+    }
+    case 'start': if (me && H.phase === 'lobby' && H.players.length) { H.round = 1; newTurn(H.players[0].id) } break;
+    case 'film': // tylko osoba wybierająca, raz na turę
+      if (from !== H.pickerId || H.phase !== 'draw' || !m.film?.id) return;
+      H.film = m.film; H.runtime = m.film.runtime || null; H.range = rangeFor(H.runtime);
+      H.hintPool = buildHints(m.film); H.phase = 'time';
+      H.feed.push({sys: true, text: (pl?.name || '?') + ' wylosował film. Teraz wybiera moment.'});
+      hostBroadcast();
+      break;
+    case 'frame': // tylko osoba wybierająca, raz na turę
+      if (from !== H.pickerId || H.phase !== 'time' || typeof m.img !== 'string') return;
+      H.frame = m.img; H.frameNote = String(m.note || '').slice(0, 200); H.phase = 'guess';
+      hostSendFrame(null); hostBroadcast();
+      break;
+    case 'guess': {
+      if (H.phase !== 'guess' || !pl || !H.film) return;
+      const text = String(m.text || '').slice(0, 120);
+      const ok = (+m.id && +m.id === H.film.id) || [H.film.title, H.film.original_title].some(t => norm(t) && norm(t) === norm(text));
+      if (ok) {
+        pl.pts++;
+        H.feed.push({ok: true, text: pl.name + ' zgadł! +1'});
+        doReveal(pl.name);
+      } else {
+        H.feed.push({bad: true, name: pl.name, text});
+      }
+      hostBroadcast();
+      break;
+    }
+    case 'hint': if (me && H.phase === 'guess' && H.hints.length < H.hintPool.length) { H.hints.push(H.hintPool[H.hints.length]); hostBroadcast() } break;
+    case 'reveal': if (me && (H.phase === 'guess' || H.phase === 'time') && H.film) { doReveal(null); hostBroadcast() } break;
+    case 'next': if (me && H.phase !== 'lobby') { H.round++; newTurn(nextPicker()) } break;
+    case 'redo': if (me && H.phase !== 'lobby') newTurn(H.players.find(p => p.id === H.pickerId && p.online) ? H.pickerId : nextPicker()); break;
+    case 'settings': if (me) { H.settings = m.settings; store.set('hostSettings', H.settings); hostBroadcast() } break;
+  }
+}
+function doReveal(winner){
+  const f = H.film;
+  H.phase = 'reveal';
+  H.reveal = {title: f.title, original_title: f.original_title, year: (f.release_date || '').slice(0, 4), poster: f.poster_path, overview: f.overview, winner};
+  if (!winner) H.feed.push({sys: true, text: 'Nikt nie zgadł.'});
+}
+function buildHints(f){
+  return [
+    f.release_date && '📅 ' + f.release_date.slice(0, 4),
+    f.genres?.length && '🎭 ' + f.genres.join(', '),
+    f.cast?.[0] && '⭐ ' + f.cast[0],
+    f.director && '🎬 reż. ' + f.director,
+    f.cast?.[1] && '⭐ ' + f.cast[1],
+    f.tagline && '💬 „' + f.tagline + '”',
+  ].filter(Boolean);
+}
+
+// ---------- klient ----------
+function clientHandle(m){
+  if (m?.t === 'state') applyState(m.s);
+  else if (m?.t === 'frame') showFrame(m.img);
+}
+
+// ================= Widok =================
+function enterGame(){
+  $('landing').classList.add('hidden'); $('game').classList.remove('hidden');
+  $('roomCode').textContent = S.code;
+  history.replaceState(null, '', '?room=' + S.code);
+}
+function curtain(big, msg){
+  $('curtain').classList.remove('hidden');
+  $('curtainBig').textContent = big; $('curtainMsg').innerHTML = msg;
+}
+function showFrame(src){
+  if (src) { $('still').src = src; $('still').classList.remove('hidden'); $('curtain').classList.add('hidden') }
+  else { $('still').classList.add('hidden'); $('still').removeAttribute('src') }
+}
+function applyState(s){
+  const prevPhase = S.pub?.phase, prevTurn = S.pub?.turn;
+  S.pub = s;
+  const me = s.players.find(p => p.id === S.me);
+  const picker = s.players.find(p => p.id === s.pickerId);
+  const iAmPicker = s.pickerId === S.me;
+  if (prevTurn !== s.turn) { S.myFilm = null; S.loading = false; clearPlayer() }
+
+  $('roundPill').textContent = s.round ? 'Runda ' + s.round : 'Lobby';
+
+  // gracze
+  $('plist').innerHTML = s.players.map(p => `<li class="${p.id === s.pickerId && s.phase !== 'lobby' ? 'picker' : ''} ${p.online ? '' : 'off'}">
+      <span class="av" style="background:${colorOf(p.name)}">${esc(p.name[0]?.toUpperCase())}</span>
+      <span class="name">${esc(p.name)}${p.id === s.hostId ? '<span class="tag">host</span>' : ''}${p.id === S.me ? '<span class="tag">(ty)</span>' : ''}${p.id === s.pickerId && s.phase !== 'lobby' ? '<span class="tag">🎬 wybiera</span>' : ''}</span>
+      <span class="pts">${p.pts}</span></li>`).join('');
+
+  // panel hosta
+  $('hostCard').classList.toggle('hidden', !S.isHost);
+  $('btnStart').classList.toggle('hidden', s.phase !== 'lobby');
+  $('btnHint').disabled = s.phase !== 'guess' || !s.hintsLeft;
+  $('btnReveal').disabled = !(s.phase === 'guess' || s.phase === 'time');
+  $('btnNext').disabled = s.phase === 'lobby';
+  $('btnRedo').disabled = s.phase === 'lobby' || s.phase === 'reveal';
+
+  // panel wybierającego
+  const showPick = iAmPicker && (s.phase === 'draw' || s.phase === 'time');
+  $('pickPanel').classList.toggle('hidden', !showPick);
+  $('pickDraw').classList.toggle('hidden', s.phase !== 'draw');
+  $('pickTime').classList.toggle('hidden', s.phase !== 'time');
+  $('btnDraw').disabled = !!S.drawing || S.drewTurn === s.turn;
+  if (s.phase === 'time' && iAmPicker && prevPhase !== 'time') { applyRange(s.range); setTimeIn(clampT((s.range.min + s.range.max) / 2 | 0)) }
+  $('btnLoad').disabled = S.loading;
+
+  // ekran
+  const pn = esc(picker?.name || '?');
+  if (s.phase === 'lobby') {
+    showFrame(null);
+    curtain('🎬', S.isHost ? 'Wyślij znajomym link (🔗 Kopiuj link) i kliknij <b>Start gry</b>, gdy wszyscy będą.' : 'Czekamy, aż host wystartuje grę…');
+  } else if (s.phase === 'draw') {
+    curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film…`);
+  } else if (s.phase === 'time') {
+    if (!S.loading) curtain('⏱', iAmPicker
+      ? `Film wylosowany (${s.runtime ? Math.floor(s.runtime / 60) + ' h ' + (s.runtime % 60) + ' min' : '?'}). Podaj minutę i sekundę, potem <b>Złap klatkę</b>.`
+      : `<span class="spin"></span><b>${pn}</b> wybiera moment filmu…`);
+  } else if (s.phase === 'guess' || s.phase === 'reveal') {
+    $('curtain').classList.add('hidden');
+  }
+
+  // zgadywanie
+  const canGuess = s.phase === 'guess' && !!me;
+  $('guess').disabled = !canGuess; $('btnGuess').disabled = !canGuess;
+  $('guess').placeholder = canGuess ? 'Wpisz tytuł filmu…' : (s.phase === 'reveal' ? 'Tura zakończona' : 'Poczekaj na klatkę…');
+  $('hints').innerHTML = s.hints.map(h => `<span class="hint">${esc(h)}</span>`).join('') + (s.frameNote ? `<span class="hint" style="background:transparent;border-color:var(--line2)">${esc(s.frameNote)}</span>` : '');
+  $('feed').innerHTML = s.feed.slice().reverse().map(f => f.sys ? `<div class="muted">${esc(f.text)}</div>`
+      : f.ok ? `<div class="ok">✔ ${esc(f.text)}</div>`
+      : `<div class="bad"><b>${esc(f.name)}</b>: <s>${esc(f.text)}</s></div>`).join('');
+
+  // odkrycie
+  const r = s.reveal;
+  $('revealBox').classList.toggle('hidden', !r);
+  if (r) $('revealBox').innerHTML = `<div class="reveal">${r.poster ? `<img src="${img(r.poster, 'w342')}" alt="">` : ''}
+      <div><div class="label" style="margin:0 0 6px">${r.winner ? '🏆 ' + esc(r.winner) + ' zgadł' : 'To był film'}</div>
+      <h3>${esc(r.title)}${r.year ? ' <span class="muted" style="font-weight:500">(' + esc(r.year) + ')</span>' : ''}</h3>
+      ${r.original_title && r.original_title !== r.title ? `<div class="muted">${esc(r.original_title)}</div>` : ''}
+      <p class="muted" style="margin:8px 0 0;font-size:14px">${esc(r.overview || '')}</p></div></div>`;
+}
+
+// ================= Akcje wybierającego =================
+$('btnDraw').onclick = async () => {
+  const s = S.pub; if (!s || s.pickerId !== S.me || s.phase !== 'draw' || S.drawing) return;
+  S.drawing = true; $('btnDraw').disabled = true; $('btnDraw').textContent = 'Losuję…';
+  try {
+    const pool = s.settings?.pool || 'popular', pages = Math.max(1, +s.settings?.pages || 10);
+    let film = null;
+    // tylko filmy, które wyszły co najmniej ~4 miesiące temu (są już w playerach) i mają trochę ocen
+    const cutoff = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
+    for (let tries = 0; tries < 8 && !film; tries++) {
+      const list = (await poolRequest(pool, 1 + Math.floor(Math.random() * pages))).results
+        .filter(m => !m.adult && m.release_date && m.release_date <= cutoff && m.vote_count >= 100);
+      if (!list.length) continue;
+      const pick = list[Math.floor(Math.random() * list.length)];
+      const f = await tmdb('/movie/' + pick.id, {append_to_response: 'credits'});
+      if (f.runtime && f.runtime < 40) continue;
+      film = {id: f.id, title: f.title, original_title: f.original_title, runtime: f.runtime, release_date: f.release_date,
+              genres: (f.genres || []).map(g => g.name), overview: f.overview, poster_path: f.poster_path, tagline: f.tagline,
+              cast: (f.credits?.cast || []).slice(0, 3).map(c => c.name), director: (f.credits?.crew || []).find(c => c.job === 'Director')?.name};
+    }
+    if (!film) throw new Error('nie udało się wylosować');
+    S.myFilm = film; S.drewTurn = s.turn;
+    send({t: 'film', film});
+  } catch (e) { toast('Błąd losowania: ' + e.message) }
+  S.drawing = false; $('btnDraw').textContent = '🎲 Wylosuj film'; $('btnDraw').disabled = S.drewTurn === S.pub?.turn;
+};
+
+// ---- wybór czasu, pilnowany na żywo ----
+function curRange(){ return S.pub?.range || {min: 150, max: 7200} }
+const clampT = t => { const {min, max} = curRange(); return Math.min(max, Math.max(min, t)) };
+function applyRange(r){
+  const el = $('tRange'); el.min = r.min; el.max = r.max;
+  $('tH').max = Math.floor(r.max / 3600);
+  $('rangeInfo').textContent = 'dozwolone ' + fmtTime(r.min) + ' – ' + fmtTime(r.max);
+}
+function setTimeIn(t){ $('tH').value = Math.floor(t / 3600); $('tM').value = Math.floor(t % 3600 / 60); $('tS').value = t % 60; $('tRange').value = t }
+function getTimeIn(){ return (+$('tH').value || 0) * 3600 + (+$('tM').value || 0) * 60 + (+$('tS').value || 0) }
+['tH', 'tM', 'tS'].forEach(id => {
+  const el = $(id);
+  el.addEventListener('input', () => {
+    if (el.value.length > 2) el.value = el.value.slice(-2);
+    if (id !== 'tH' && +el.value > 59) el.value = 59;
+    const t = getTimeIn(), {max} = curRange();
+    if (t > max) setTimeIn(max); else $('tRange').value = t;
+  });
+  el.addEventListener('change', () => setTimeIn(clampT(getTimeIn())));
+  el.addEventListener('blur', () => setTimeIn(clampT(getTimeIn())));
+});
+$('tRange').addEventListener('input', () => setTimeIn(+$('tRange').value));
+$('btnRandTime').onclick = () => { const {min, max} = curRange(); setTimeIn(min + Math.floor(Math.random() * (max - min))) };
+
+// ---- łapanie klatki ----
+$('btnLoad').onclick = async () => {
+  const s = S.pub;
+  if (!s || s.pickerId !== S.me || s.phase !== 'time' || !S.myFilm || S.loading || S.loadedTurn === s.turn) return;
+  const t = clampT(getTimeIn()); setTimeIn(t);
+  if (!cap) { const ok = await enableCapture(); if (!ok) return }
+  S.loading = true; $('btnLoad').disabled = true;
+  loadAt(t, t, 0);
+};
+function loadFailed(msg){
+  S.loading = false; $('btnLoad').disabled = false; clearPlayer();
+  curtain('⚠', msg + '<br><span class="muted">Możesz spróbować jeszcze raz.</span>');
+}
+function clearPlayer(){
+  if (pw) { clearTimeout(pw.fallback); clearInterval(pw.poll); pw = null }
+  $('frameHost').innerHTML = '';
+}
+function loadAt(t, asked, attempt){
+  clearPlayer();
+  const f = document.createElement('iframe');
+  f.allow = 'autoplay; fullscreen; encrypted-media';
+  f.referrerPolicy = 'origin';
+  f.src = local.prov.replaceAll('{id}', S.myFilm.id).replaceAll('{t}', t);
+  $('frameHost').appendChild(f);
+  startWatch(f, t, asked, attempt);
+  curtain(fmtTime(asked), '<span class="spin"></span>' + (attempt ? 'Trafiło w napisy — przesuwam kawałek… ' : 'Ładuję film i łapię klatkę… ') + '<span id="pState" class="muted"></span>');
+}
+
+// Nagrywanie własnej karty (Element Capture): nagrywa sam player, nawet gdy jest zasłonięty.
+let cap = null;
+async function enableCapture(){
+  if (cap) return true;
+  if (!navigator.mediaDevices?.getDisplayMedia) { toast('Ta przeglądarka nie umie nagrywać karty — użyj Chrome albo Edge.', 5000); return false }
+  try {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      video: {frameRate: 30}, audio: false,
+      preferCurrentTab: true, selfBrowserSurface: 'include', surfaceSwitching: 'exclude', monitorTypeSurfaces: 'exclude'
+    });
+    const track = stream.getVideoTracks()[0];
+    let mode = 'tab';
+    try { if (window.RestrictionTarget && track.restrictTo) { await track.restrictTo(await RestrictionTarget.fromElement($('frameHost'))); mode = 'element' } } catch (e) { console.warn(e) }
+    if (mode === 'tab') try { if (window.CropTarget && track.cropTo) { await track.cropTo(await CropTarget.fromElement($('frameHost'))); mode = 'crop' } } catch (e) { console.warn(e) }
+    const video = document.createElement('video');
+    video.muted = true; video.playsInline = true; video.srcObject = stream;
+    await video.play();
+    cap = {stream, track, video, mode};
+    track.addEventListener('ended', () => { cap = null });
+    return true;
+  } catch (e) {
+    toast('Bez udostępnienia karty nie da się złapać klatki.', 5000);
+    return false;
+  }
+}
+const grabCanvas = document.createElement('canvas');
+async function grabFrame(){
+  const v = cap.video, host = $('frameHost'), c = grabCanvas;
+  let hid = false;
+  if (cap.mode !== 'element') { $('curtain').style.visibility = 'hidden'; hid = true; await new Promise(r => setTimeout(r, 180)) }
+  let sx = 0, sy = 0, sw = v.videoWidth, sh = v.videoHeight;
+  if (cap.mode === 'tab') { const r = host.getBoundingClientRect(), k = v.videoWidth / window.innerWidth; sx = r.left * k; sy = r.top * k; sw = r.width * k; sh = r.height * k }
+  const scale = Math.min(1, 1280 / sw);
+  c.width = Math.max(1, Math.round(sw * scale)); c.height = Math.max(1, Math.round(sh * scale));
+  c.getContext('2d').drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  if (hid) $('curtain').style.visibility = '';
+}
+// 'credits' (napisy / plansza z logo), 'black' (czarny ekran) albo null (zwykły kadr)
+function classifyFrame(c){
+  const W = 192, H2 = 108, t = document.createElement('canvas'); t.width = W; t.height = H2;
+  const x = t.getContext('2d'); x.drawImage(c, 0, 0, W, H2);
+  const d = x.getImageData(0, 0, W, H2).data;
+  const L = new Float32Array(W * H2);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) L[p] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+  const rowMax = r => { let m = 0; for (let k = 0; k < W; k++) m = Math.max(m, L[r * W + k]); return m };
+  let top = 0, bot = H2 - 1;
+  while (top < H2 / 2 && rowMax(top) < 18) top++;
+  while (bot > H2 / 2 && rowMax(bot) < 18) bot--;
+  let n = 0, dark = 0, mid = 0, bright = 0, sat = 0, edge = 0;
+  for (let r = top; r <= bot; r++) for (let k = 0; k < W; k++) {
+    const p = r * W + k, l = L[p]; n++;
+    if (l < 40) dark++; else if (l > 150) bright++; else mid++;
+    const i = p * 4, mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+    if (l > 150) sat += (mx - mn) / (mx || 1);
+    if (k > 0 && Math.abs(l - L[p - 1]) > 90) edge++;
+  }
+  if (!n) return 'black';
+  const fd = dark / n, fm = mid / n, fb = bright / n, fs = bright ? sat / bright : 0;
+  if (fb < 0.001 && fm < 0.01) return 'black';
+  if (fd > 0.85 && fm < 0.06 && fb > 0.002 && fb < 0.15 && edge / n > 0.015 && fs < 0.25) return 'credits';
+  return null;
+}
+
+// ---- sygnały z playera (VidFast wysyła PLAYER_EVENT z currentTime) ----
+let pw = null;
+function sendCmd(msg){ const f = $('frameHost').querySelector('iframe'); try { f?.contentWindow.postMessage(msg, '*') } catch {} }
+function pState(txt){ const el = $('pState'); if (el) el.innerHTML = txt }
+function startWatch(frame, target, asked, attempt){
+  pw = {frame, target, asked, attempt, state: 'loading', got: false, grabbing: false};
+  pw.fallback = setTimeout(() => { if (pw?.frame === frame && pw.state === 'loading') loadFailed(pw.got ? 'Film się nie wczytał.' : 'Player nie odpowiada.') }, 45000);
+  pw.poll = setInterval(() => { if (pw?.frame === frame) sendCmd({command: 'getStatus'}) }, 250);
+}
+function parsePlayerMsg(d){
+  if (typeof d === 'string') { try { d = JSON.parse(d) } catch { return null } }
+  if (!d || typeof d !== 'object') return null;
+  const inner = d.data && typeof d.data === 'object' ? d.data : d;
+  let ct = inner.currentTime ?? inner.time ?? d.currentTime;
+  return {ev: String(inner.event || inner.type || '').toLowerCase(), ct: ct == null ? null : +ct, playing: inner.playing ?? null};
+}
+window.addEventListener('message', e => {
+  if (!pw || !/vidfast|vidlink|vidsrc|2embed/.test(e.origin || '')) return;
+  const m = parsePlayerMsg(e.data); if (!m || m.ct == null) return;
+  pw.got = true;
+  if (pw.state !== 'loading') return;
+  const playing = m.playing != null ? m.playing : /^play$|playing|timeupdate/.test(m.ev);
+  if (!(playing && m.ct >= pw.target + 0.3)) { pState('(' + fmtTime(m.ct) + ')'); return }
+  if (pw.grabbing || !cap) return;
+  pw.grabbing = true;
+  const me = pw, ct = m.ct;
+  grabFrame().then(() => {
+    me.grabbing = false;
+    if (pw !== me || me.state !== 'loading') return;
+    const kind = classifyFrame(grabCanvas);
+    if (kind === 'black' && ct < me.target + 3) return; // player dopiero startuje — spróbuj przy następnym sygnale
+    me.state = 'done';
+    clearPlayer(); // usunięcie playera = film przestaje lecieć
+    if (kind && me.attempt < 4) {
+      const R = (S.myFilm.runtime || 120) * 60, dir = me.target > R / 2 ? -1 : 1, {min, max} = curRange();
+      let nt = Math.min(max, Math.max(min, me.target + dir * (kind === 'black' ? 20 : 90)));
+      if (nt === me.target) nt = Math.min(max, Math.max(min, me.target - dir * 90));
+      loadAt(nt, me.asked, me.attempt + 1);
+      return;
+    }
+    const moved = Math.round(me.target - me.asked);
+    const note = moved ? 'klatka przesunięta o ' + (moved > 0 ? '+' : '−') + fmtTime(Math.abs(moved)) + ' (trafiło w napisy)' : '';
+    S.loading = false; S.loadedTurn = S.pub.turn;
+    send({t: 'frame', img: grabCanvas.toDataURL('image/jpeg', 0.86), note});
+  }).catch(err => { me.grabbing = false; loadFailed('Błąd łapania klatki: ' + err.message) });
+});
+
+// ================= Zgadywanie =================
+let sugT, sugIdx = -1;
+$('guess').oninput = () => {
+  delete $('guess').dataset.id;
+  clearTimeout(sugT);
+  const q = $('guess').value.trim();
+  if (q.length < 2) { $('sugList').classList.add('hidden'); return }
+  sugT = setTimeout(async () => {
+    try {
+      const r = await tmdb('/search/movie', {query: q});
+      const ul = $('sugList'); ul.innerHTML = ''; sugIdx = -1;
+      r.results.slice(0, 7).forEach(m => {
+        const li = document.createElement('li');
+        li.innerHTML = `${m.poster_path ? `<img src="${img(m.poster_path, 'w92')}" alt="">` : '<img alt="">'}<span><b></b> <span class="muted"></span></span>`;
+        li.querySelector('b').textContent = m.title;
+        li.querySelector('.muted').textContent = m.release_date ? '(' + m.release_date.slice(0, 4) + ')' : '';
+        li.onclick = () => { $('guess').value = m.title; $('guess').dataset.id = m.id; ul.classList.add('hidden'); $('btnGuess').click() };
+        ul.appendChild(li);
+      });
+      ul.classList.toggle('hidden', !r.results.length);
+    } catch {}
+  }, 220);
+};
+$('guess').onkeydown = e => {
+  const items = [...$('sugList').querySelectorAll('li')], open = !$('sugList').classList.contains('hidden');
+  if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items.forEach((li, i) => li.classList.toggle('act', i === sugIdx));
+  } else if (e.key === 'Enter') {
+    if (open && sugIdx >= 0) items[sugIdx].click(); else $('btnGuess').click();
+  } else if (e.key === 'Escape') $('sugList').classList.add('hidden');
+};
+document.addEventListener('click', e => { if (!e.target.closest('.sug')) $('sugList').classList.add('hidden') });
+$('btnGuess').onclick = () => {
+  const text = $('guess').value.trim(); if (!text) return;
+  send({t: 'guess', text, id: +$('guess').dataset.id || 0});
+  $('guess').value = ''; delete $('guess').dataset.id; $('sugList').classList.add('hidden');
+};
+
+// ================= Host / UI =================
+$('btnStart').onclick = () => send({t: 'start'});
+$('btnHint').onclick = () => send({t: 'hint'});
+$('btnReveal').onclick = () => send({t: 'reveal'});
+$('btnNext').onclick = () => send({t: 'next'});
+$('btnRedo').onclick = () => { if (confirm('Powtórzyć turę? Osoba wybierająca losuje film jeszcze raz.')) send({t: 'redo'}) };
+$('btnCopy').onclick = async () => {
+  const url = location.origin + location.pathname + '?room=' + S.code;
+  try { await navigator.clipboard.writeText(url); toast('Skopiowano link do pokoju') } catch { prompt('Link do pokoju:', url) }
+};
+$('btnSettings').onclick = () => {
+  $('hostSettings').classList.toggle('hidden', !S.isHost);
+  $('dlgNote').textContent = S.isHost ? '' : 'Pulę filmów ustawia host.';
+  const st = S.pub?.settings || {pool: 'popular', pages: 10};
+  $('sPool').value = st.pool; $('sPages').value = st.pages;
+  $('sProv').value = local.prov; $('sKey').value = local.key;
+  $('dlg').showModal();
+};
+$('btnSave').onclick = () => {
+  local = {prov: $('sProv').value.trim() || DEFAULTS.prov, key: $('sKey').value.trim() || DEFAULTS.key};
+  store.set('local', local);
+  if (S.isHost) send({t: 'settings', settings: {pool: $('sPool').value, pages: Math.max(1, +$('sPages').value || 10)}});
+  $('dlg').close();
+};
+
+// ================= Start =================
+const params = new URLSearchParams(location.search);
+$('inName').value = store.get('name', '');
+if (params.get('room')) { $('inCode').value = params.get('room').toUpperCase(); $('btnJoin').classList.add('pri'); $('btnCreate').classList.remove('pri') }
+function readName(){
+  const n = $('inName').value.trim();
+  if (!n) { $('landErr').textContent = 'Podaj nick.'; $('inName').focus(); return null }
+  store.set('name', n); S.name = n; $('landErr').textContent = ''; return n;
+}
+$('btnCreate').onclick = () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; createRoom() };
+$('btnJoin').onclick = () => {
+  if (!readName()) return;
+  const code = $('inCode').value.trim().toUpperCase();
+  if (code.length < 5) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
+  $('btnJoin').disabled = true; $('btnJoin').textContent = 'Łączę…';
+  setTimeout(() => { $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz' }, 9500);
+  joinRoom(code);
+};
+$('inCode').onkeydown = e => { if (e.key === 'Enter') $('btnJoin').click() };
+$('inName').onkeydown = e => { if (e.key === 'Enter') (params.get('room') ? $('btnJoin') : $('btnCreate')).click() };
+window.addEventListener('beforeunload', e => { if (S.isHost && H?.players.length > 1) { e.preventDefault(); e.returnValue = '' } });
+</script>
+</body>
+</html>
