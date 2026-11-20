@@ -57,8 +57,11 @@ header .sp{flex:1}
 .or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
 
 /* ---- game layout ---- */
-main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;padding:20px 24px;max-width:1440px;margin:auto}
-@media(max-width:960px){main{grid-template-columns:1fr;padding:16px}}
+/* lewa: zgadywanie + wyniki · środek: klatka · prawa: zaproszenie + panel hosta */
+main{display:grid;grid-template-columns:340px minmax(0,1fr) 280px;grid-template-areas:"left center right";gap:20px;padding:20px 24px;max-width:1680px;margin:auto}
+#colLeft{grid-area:left}#colCenter{grid-area:center}#colRight{grid-area:right}
+@media(max-width:1280px){main{grid-template-columns:320px minmax(0,1fr);grid-template-areas:"left center" "left right"}}
+@media(max-width:960px){main{grid-template-columns:1fr;grid-template-areas:"center" "left" "right";padding:16px}}
 .stack{display:grid;gap:16px;align-content:start}
 .screen:fullscreen,.screen.big{aspect-ratio:auto;width:100vw;height:100vh;border-radius:0;border:0}
 .screen.big{position:fixed;inset:0;z-index:200}
@@ -130,7 +133,7 @@ dialog input,dialog select{width:100%}
 <!-- ============ LANDING ============ -->
 <section id="landing" class="landing">
   <h1>Zgadnij <span>Klatkę</span></h1>
-  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 9)</span></p>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 10)</span></p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
     <button class="pri" id="btnCreate">Utwórz pokój</button>
@@ -155,7 +158,27 @@ dialog input,dialog select{width:100%}
   </header>
 
   <main>
-    <div class="stack">
+    <div class="stack" id="colLeft">
+      <!-- zgadywanie -->
+      <div class="card" id="guessCard">
+        <p class="label">Zgadywanie</p>
+        <div class="row">
+          <div class="sug">
+            <input id="guess" placeholder="Wpisz tytuł filmu…" autocomplete="off" disabled>
+            <ul id="sugList" class="hidden"></ul>
+          </div>
+        </div>
+        <div class="hints" id="hints"></div>
+        <div class="feed" id="feed"></div>
+        <div id="revealBox" class="hidden" style="margin-top:16px"></div>
+      </div>
+      <div class="card">
+        <p class="label">Wyniki</p>
+        <ul class="players" id="plist"></ul>
+      </div>
+    </div>
+
+    <div class="stack" id="colCenter">
       <div class="screen" id="screen">
         <div id="frameHost"></div>
         <img id="still" class="hidden" alt="" draggable="false">
@@ -198,27 +221,9 @@ dialog input,dialog select{width:100%}
           </div>
         </div>
       </div>
-
-      <!-- zgadywanie -->
-      <div class="card" id="guessCard">
-        <p class="label">Zgadywanie</p>
-        <div class="row">
-          <div class="sug">
-            <input id="guess" placeholder="Wpisz tytuł filmu…" autocomplete="off" disabled>
-            <ul id="sugList" class="hidden"></ul>
-          </div>
-        </div>
-        <div class="hints" id="hints"></div>
-        <div class="feed" id="feed"></div>
-        <div id="revealBox" class="hidden" style="margin-top:16px"></div>
-      </div>
     </div>
 
-    <aside class="stack">
-      <div class="card">
-        <p class="label">Gracze</p>
-        <ul class="players" id="plist"></ul>
-      </div>
+    <aside class="stack" id="colRight">
       <div class="card" id="inviteCard">
         <p class="label">Zaproś znajomych</p>
         <div class="row" style="flex-wrap:nowrap">
@@ -244,7 +249,7 @@ dialog input,dialog select{width:100%}
           <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
         </div>
       </div>
-      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 9</span></p>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 10</span></p>
     </aside>
   </main>
 </section>
@@ -371,6 +376,7 @@ async function createRoom(resume){
               hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: Object.assign({pool: 'known', mode: 'race'}, store.get('hostSettings', {}))};
     hostHandle(S.me, {t: 'join', name: S.name});
     if (H.frame) hostSendFrame();
+    armAutoNext(); // host odświeżył stronę w trakcie odliczania
     enterGame();
   });
   mq.on('message', (t, payload) => {
@@ -447,7 +453,16 @@ function pubState(){
   return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
           runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
           feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings,
-          guesserId: H.guesserId || null, triesBy: H.triesBy || {}, hostKey: S.keys.pub};
+          guesserId: H.guesserId || null, triesBy: H.triesBy || {}, hostKey: S.keys.pub,
+          nextIn: H.nextAt ? Math.max(0, Math.ceil((H.nextAt - Date.now()) / 1000)) : null};
+}
+// po odkryciu filmu następna tura rusza sama (host może odliczanie zatrzymać)
+const AUTO_NEXT_S = 10;
+let autoNextT = null;
+function armAutoNext(){
+  clearTimeout(autoNextT);
+  if (H.phase !== 'reveal' || !H.nextAt) return;
+  autoNextT = setTimeout(() => { if (H.phase === 'reveal' && H.nextAt) hostHandle(S.me, {t: 'next'}) }, Math.max(1000, H.nextAt - Date.now()));
 }
 function hostBroadcast(){
   const s = pubState();
@@ -461,6 +476,7 @@ function hostSendFrame(){
 }
 function newTurn(pickerId){
   H.turn = (H.turn || 0) + 1;
+  H.nextAt = null; clearTimeout(autoNextT);
   // tryb „każdy swój film”: klatkę od osoby wybierającej zgaduje tylko następny gracz
   const guesserId = H.settings.mode === 'own' ? pickerId : null;
   Object.assign(H, {phase: 'draw', pickerId, guesserId, triesBy: {}, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
@@ -536,6 +552,7 @@ function hostHandle(from, m){
     case 'reveal': if (me && (H.phase === 'guess' || H.phase === 'time') && H.film) { doReveal(null); hostBroadcast() } break;
     case 'next': if (me && H.phase !== 'lobby') { H.round++; newTurn(nextPicker()) } break;
     case 'redo': if (me && H.phase !== 'lobby') newTurn(H.players.find(p => p.id === H.pickerId && p.online) ? H.pickerId : nextPicker()); break;
+    case 'stopnext': if (me && H.nextAt) { H.nextAt = null; clearTimeout(autoNextT); hostBroadcast() } break;
     case 'settings': if (me) {
       H.settings = {pool: POOLS[m.settings?.pool] ? m.settings.pool : 'known', mode: MODES[m.settings?.mode] ? m.settings.mode : 'race'};
       store.set('hostSettings', H.settings);
@@ -548,6 +565,7 @@ function hostHandle(from, m){
 function doReveal(winner){
   const f = H.film;
   H.phase = 'reveal';
+  H.nextAt = Date.now() + AUTO_NEXT_S * 1000; armAutoNext();
   H.reveal = {title: f.title, original_title: f.original_title, year: (f.release_date || '').slice(0, 4), poster: f.poster_path, overview: f.overview, winner};
   if (!winner && !H.guesserId) H.feed.push({sys: true, text: 'Nikt nie zgadł.'});
 }
@@ -708,8 +726,17 @@ function applyState(s){
       <div><div class="label" style="margin:0 0 6px">${r.winner ? '🏆 ' + esc(r.winner) + ' zgadł' : 'To był film'}</div>
       <h3>${esc(r.title)}${r.year ? ' <span class="muted" style="font-weight:500">(' + esc(r.year) + ')</span>' : ''}</h3>
       ${r.original_title && r.original_title !== r.title ? `<div class="muted">${esc(r.original_title)}</div>` : ''}
-      <p class="muted" style="margin:8px 0 0;font-size:14px">${esc(r.overview || '')}</p></div></div>`;
+      <p class="muted" style="margin:8px 0 0;font-size:14px">${esc(r.overview || '')}</p></div></div>
+      <div class="row" style="margin-top:12px"><span class="muted" id="nextIn"></span>${S.isHost && s.nextIn != null ? '<button class="ghost sm" id="btnStopNext">⏸ Zatrzymaj</button>' : ''}</div>`;
+  if ($('btnStopNext')) $('btnStopNext').onclick = () => send({t: 'stopnext'});
+  S.nextDeadline = s.nextIn != null ? Date.now() + s.nextIn * 1000 : null;
+  tickNextIn();
 }
+function tickNextIn(){
+  const el = $('nextIn'); if (!el) return;
+  el.textContent = S.nextDeadline ? 'Następna tura za ' + Math.max(0, Math.ceil((S.nextDeadline - Date.now()) / 1000)) + ' s…' : '';
+}
+setInterval(tickNextIn, 250);
 
 // ================= Akcje wybierającego =================
 $('btnDraw').onclick = async () => {
@@ -939,9 +966,10 @@ $('guess').oninput = () => {
   if (q.length < 2) { $('sugList').classList.add('hidden'); return }
   sugT = setTimeout(async () => {
     try {
-      const r = await tmdb('/search/movie', {query: q});
+      const results = await searchMovies(q);
+      if ($('guess').value.trim() !== q) return; // przyszły wyniki dla starszego zapytania
       const ul = $('sugList'); ul.innerHTML = ''; sugIdx = -1;
-      r.results.slice(0, 7).forEach(m => {
+      results.slice(0, 7).forEach(m => {
         const li = document.createElement('li');
         li.innerHTML = `${m.poster_path ? `<img src="${img(m.poster_path, 'w92')}" alt="">` : '<img alt="">'}<span><b></b> <span class="muted"></span></span>`;
         li.querySelector('b').textContent = m.title;
@@ -949,7 +977,7 @@ $('guess').oninput = () => {
         li.onclick = () => { $('guess').value = m.title; $('guess').dataset.id = m.id; ul.classList.add('hidden'); submitGuess() };
         ul.appendChild(li);
       });
-      ul.classList.toggle('hidden', !r.results.length);
+      ul.classList.toggle('hidden', !results.length);
     } catch {}
   }, 220);
 };
@@ -959,10 +987,54 @@ $('guess').onkeydown = e => {
     e.preventDefault(); sugIdx = (sugIdx + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
     items.forEach((li, i) => li.classList.toggle('act', i === sugIdx));
   } else if (e.key === 'Enter') {
-    if (open && items.length) items[Math.max(0, sugIdx)].click(); else submitGuess();
+    if (open && sugIdx >= 0 && items[sugIdx]) items[sugIdx].click(); else guessByText();
   } else if (e.key === 'Escape') $('sugList').classList.add('hidden');
 };
 document.addEventListener('click', e => { if (!e.target.closest('.sug')) $('sugList').classList.add('hidden') });
+
+// Enter bez wyboru z listy: zamiast surowego tekstu zgadujemy najbliższy film z TMDB.
+// Wyszukiwarka TMDB nie wybacza literówek („avengrs” = 0 wyników), więc pytamy też o ucięte
+// wersje zapytania i pojedyncze słowa, a potem wybieramy tytuł najbardziej podobny do wpisanego.
+const searchCache = new Map();
+const searchMovies = q => {
+  if (!searchCache.has(q)) searchCache.set(q, tmdb('/search/movie', {query: q}).then(r => r.results || [], () => []));
+  return searchCache.get(q);
+};
+function lev(a, b){
+  let p = Array.from({length: b.length + 1}, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) { const c = [i]; for (let j = 1; j <= b.length; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c }
+  return p[b.length];
+}
+const similar = (a, b) => a && b ? 1 - lev(a, b) / Math.max(a.length, b.length) : 0;
+function titleScore(q, m){
+  const full = [m.title, m.original_title].map(norm).filter(Boolean);
+  const n = q.split(' ').length; // „harry poter” porównujemy też z początkiem tytułu, ale pełny tytuł wygrywa remisy
+  const sim = Math.max(...full.map(t => similar(q, t)), ...full.map(t => 0.9 * similar(q, t.split(' ').slice(0, n).join(' '))));
+  return {sim, score: sim + 0.12 * Math.min(1, Math.log10((m.vote_count || 0) + 1) / 4)};
+}
+async function closestMovie(raw){
+  const q = norm(raw); if (!q) return null;
+  const qs = new Set([raw.trim(), q]);
+  for (let n = q.length - 1; n >= Math.max(3, q.length - 4); n--) qs.add(q.slice(0, n).trim());
+  for (const w of q.split(' ').filter(w => w.length >= 3)) { qs.add(w); qs.add(w.slice(0, Math.max(3, Math.ceil(w.length * 0.6)))) }
+  const all = new Map();
+  (await Promise.all([...qs].map(searchMovies))).flat().forEach(m => all.set(m.id, m));
+  let best = null;
+  for (const m of all.values()) { const s = titleScore(q, m); if (!best || s.score > best.score) best = Object.assign(s, {m}) }
+  return best && best.sim > 0.6 ? best.m : null;
+}
+let resolving = false;
+async function guessByText(){
+  const raw = $('guess').value.trim(); if (!raw || resolving) return;
+  resolving = true; $('sugList').classList.add('hidden');
+  try {
+    const m = await closestMovie(raw);
+    if (!m) { toast('Nie wiem, o jaki film chodzi — popraw tytuł albo wybierz z listy.'); return }
+    if ($('guess').value.trim() !== raw) return; // ktoś w międzyczasie pisał dalej
+    $('guess').value = m.title; $('guess').dataset.id = m.id;
+    submitGuess();
+  } finally { resolving = false }
+}
 function submitGuess(){
   const text = $('guess').value.trim(); if (!text) return;
   send({t: 'guess', text, id: +$('guess').dataset.id || 0});
