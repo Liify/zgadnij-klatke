@@ -311,11 +311,37 @@ function rangeFor(runtimeMin){
 // Wszyscy łączą się z publicznym brokerem MQTT (WebSocket po HTTPS) — działa przez internet, bez łączenia komputerów bezpośrednio.
 // Host trzyma pełny stan gry (łącznie z tajnym filmem). Reszta dostaje tylko stan publiczny.
 const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-const NS = 'zgadnijklatke/v2/';
+const NS = 'zgadnijklatke/v3/'; // v3: film do hosta idzie zaszyfrowany (starsze wersje gry nie wejdą do pokoju)
 const topic = (code, k) => NS + code + '/' + k;
 const rid = () => Math.random().toString(36).slice(2, 10);
-const S = {me: null, name: '', code: null, isHost: false, mq: null, pub: null, myFilm: null, seen: new Map()};
+const S = {me: null, name: '', code: null, isHost: false, mq: null, pub: null, myFilm: null, seen: new Map(), keys: null};
 let H = null; // stan hosta
+
+// ---------- szyfrowanie filmu ----------
+// Broker jest publiczny — każdy, kto zna kod pokoju, może podsłuchiwać. Dlatego wylosowany film
+// wybierający szyfruje kluczem publicznym hosta (ECDH P-256 + AES-GCM); odczytać go może tylko host.
+const EC = {name: 'ECDH', namedCurve: 'P-256'};
+const b64 = buf => { let s = ''; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s) };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const aesFrom = (priv, pub) => crypto.subtle.deriveKey({name: 'ECDH', public: pub}, priv, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
+async function hostKeys(saved){
+  if (saved?.priv && saved.pub) return {priv: await crypto.subtle.importKey('jwk', saved.priv, EC, true, ['deriveKey']), pub: saved.pub, saved};
+  const kp = await crypto.subtle.generateKey(EC, true, ['deriveKey']);
+  const pub = await crypto.subtle.exportKey('jwk', kp.publicKey), priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  return {priv: kp.privateKey, pub, saved: {pub, priv}};
+}
+async function sealForHost(hostPubJwk, obj){
+  const hostPub = await crypto.subtle.importKey('jwk', hostPubJwk, EC, false, []);
+  const eph = await crypto.subtle.generateKey(EC, true, ['deriveKey']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, await aesFrom(eph.privateKey, hostPub), new TextEncoder().encode(JSON.stringify(obj)));
+  return {epk: await crypto.subtle.exportKey('jwk', eph.publicKey), iv: b64(iv), ct: b64(ct)};
+}
+async function openSealed(box){
+  const epk = await crypto.subtle.importKey('jwk', box.epk, EC, false, []);
+  const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: unb64(box.iv)}, await aesFrom(S.keys.priv, epk), unb64(box.ct));
+  return JSON.parse(new TextDecoder().decode(pt));
+}
 
 function newCode(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s }
 
@@ -326,9 +352,11 @@ function connLost(on){
   $('netWarn').classList.toggle('hidden', !on);
 }
 
-function createRoom(resume){
+async function createRoom(resume){
   const code = resume?.code || newCode();
   S.code = code; S.isHost = true; S.me = resume?.me || 'h_' + rid();
+  try { S.keys = await hostKeys(resume?.keys) }
+  catch (e) { $('landErr').textContent = 'Ta przeglądarka nie obsługuje szyfrowania (WebCrypto): ' + e.message; return }
   // gdy host zniknie, broker sam wyczyści stan pokoju → goście zobaczą komunikat
   const mq = mqConnect({topic: topic(code, 'state'), payload: '', retain: true, qos: 1});
   S.mq = mq;
@@ -349,6 +377,11 @@ function createRoom(resume){
     let m; try { m = JSON.parse(payload.toString()) } catch { return }
     if (!m?.from || m.from === S.me) return;
     S.seen.set(m.from, Date.now());
+    if (m.t === 'film') { // od gości film przychodzi tylko zaszyfrowany
+      if (!m.enc) return;
+      openSealed(m.enc).then(film => hostHandle(m.from, {t: 'film', film}), () => {});
+      return;
+    }
     hostHandle(m.from, m);
   });
   mq.on('offline', () => connLost(true));
@@ -414,13 +447,13 @@ function pubState(){
   return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
           runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
           feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings,
-          guesserId: H.guesserId || null, triesBy: H.triesBy || {}};
+          guesserId: H.guesserId || null, triesBy: H.triesBy || {}, hostKey: S.keys.pub};
 }
 function hostBroadcast(){
   const s = pubState();
   S.mq?.publish(topic(S.code, 'state'), JSON.stringify({t: 'state', s}), {qos: 1, retain: true});
   applyState(s);
-  try { sessionStorage.setItem('zk.hostRoom', JSON.stringify({code: S.code, me: S.me, H})) } catch {} // żeby host mógł odświeżyć stronę i wrócić do pokoju
+  try { sessionStorage.setItem('zk.hostRoom', JSON.stringify({code: S.code, me: S.me, H, keys: S.keys.saved})) } catch {} // żeby host mógł odświeżyć stronę i wrócić do pokoju
 }
 function hostSendFrame(){
   S.mq?.publish(topic(S.code, 'frame'), JSON.stringify({turn: H.turn, img: H.frame}), {qos: 1, retain: true});
@@ -701,7 +734,11 @@ $('btnDraw').onclick = async () => {
     if (!film) throw new Error('nie udało się wylosować');
     S.myFilm = film; S.drewTurn = s.turn;
     try { sessionStorage.setItem('zk.myFilm', JSON.stringify({code: S.code, turn: s.turn, film})) } catch {}
-    send({t: 'film', film});
+    if (S.isHost) send({t: 'film', film});
+    else {
+      if (!S.pub?.hostKey) throw new Error('host ma starą wersję gry — niech odświeży stronę');
+      send({t: 'film', enc: await sealForHost(S.pub.hostKey, film)});
+    }
   } catch (e) { toast('Błąd losowania: ' + e.message) }
   S.drawing = false; $('btnDraw').textContent = '🎲 Wylosuj film'; $('btnDraw').disabled = S.drewTurn === S.pub?.turn;
 };
