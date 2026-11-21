@@ -7,7 +7,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <style>
 :root{
   --bg:#08080b; --bg2:#0f0f14; --card:rgba(255,255,255,.035); --card2:rgba(255,255,255,.06);
@@ -139,7 +138,7 @@ dialog input,dialog select{width:100%}
 <!-- ============ LANDING ============ -->
 <section id="landing" class="landing">
   <h1>Zgadnij <span>Klatkę</span></h1>
-  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 11)</span></p>
+  <p class="muted">Losujemy film, ktoś podaje minutę i sekundę, reszta zgaduje tytuł po jednej klatce. <span style="opacity:.6">(wersja 12)</span></p>
   <div class="card">
     <input id="inName" placeholder="Twój nick" maxlength="20" autocomplete="nickname">
     <button class="pri" id="btnCreate">Utwórz pokój</button>
@@ -255,7 +254,7 @@ dialog input,dialog select{width:100%}
           <button class="ghost wide sm" id="btnRedo" title="Gdy klatka się nie złapała — ta sama osoba losuje jeszcze raz">↺ Powtórz turę</button>
         </div>
       </div>
-      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 11</span></p>
+      <p class="muted" style="font-size:13px;margin:0 4px">Klatkę łapie przeglądarka osoby wybierającej — potrzebny Chrome albo Edge. Zgadywać można w każdej przeglądarce.<br><span style="opacity:.6">wersja 12</span></p>
     </aside>
   </main>
 </section>
@@ -274,9 +273,10 @@ dialog input,dialog select{width:100%}
 <script>
 // ================= Konfiguracja =================
 const DEFAULTS = {
-  key: 'USUNIETO',
   prov: 'https://vidfast.vc/movie/{id}?startAt={t}&autoPlay=true&title=false&poster=false'
 };
+// serwer gry (Cloudflare); lokalnie `wrangler dev` na porcie 8787
+const API = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? 'http://localhost:8787' : 'https://zgadnij-klatke.zgadnijklatke.workers.dev';
 const PEER_PREFIX = 'zgadnij-klatke-v1-';
 const $ = id => document.getElementById(id);
 const store = {
@@ -285,29 +285,16 @@ const store = {
 };
 const local = DEFAULTS;
 
-// ================= TMDB =================
-async function tmdb(path, params = {}){
-  const u = new URL('https://api.themoviedb.org/3' + path);
-  u.searchParams.set('api_key', local.key);
-  u.searchParams.set('language', 'pl-PL');
-  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
-  const r = await fetch(u);
-  if (!r.ok) throw new Error('TMDB ' + r.status);
-  return r.json();
-}
+// ================= TMDB (przez serwer gry — klucz zostaje na serwerze) =================
+const api = path => fetch(API + path).then(r => r.json());
 const img = (p, s = 'w500') => p ? 'https://image.tmdb.org/t/p/' + s + p : '';
-const POOLS = {
-  known:    {label: 'Znane filmy (top 500 wszech czasów)', q: {sort_by: 'vote_count.desc'}, pages: [1, 25]},
-  harder:   {label: 'Trudniejsze (miejsca 500–2000)',      q: {sort_by: 'vote_count.desc'}, pages: [26, 100]},
-  pl:       {label: 'Polskie filmy',                       q: {sort_by: 'vote_count.desc', with_original_language: 'pl'}, pages: [1, 8]},
-  classics: {label: 'Klasyki (przed 2000)',                q: {sort_by: 'vote_count.desc', 'primary_release_date.lte': '1999-12-31'}, pages: [1, 15]},
-  recent:   {label: 'Ostatnie lata (2020+)',               q: {sort_by: 'vote_count.desc', 'primary_release_date.gte': '2020-01-01'}, pages: [1, 10]},
+const POOLS = { // co dokładnie losować, wie serwer; tu tylko nazwy do listy w panelu hosta
+  known:    {label: 'Znane filmy (top 500 wszech czasów)'},
+  harder:   {label: 'Trudniejsze (miejsca 500–2000)'},
+  pl:       {label: 'Polskie filmy'},
+  classics: {label: 'Klasyki (przed 2000)'},
+  recent:   {label: 'Ostatnie lata (2020+)'},
 };
-function poolRequest(pool){
-  const p = POOLS[pool] || POOLS.known;
-  const page = p.pages[0] + Math.floor(Math.random() * (p.pages[1] - p.pages[0] + 1));
-  return tmdb('/discover/movie', Object.assign({page, include_adult: false}, p.q));
-}
 
 // ================= Utils =================
 function fmtTime(t){ t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? h + ':' : '') + String(m).padStart(h ? 2 : 1, '0') + ':' + String(s).padStart(2, '0') }
@@ -325,335 +312,56 @@ function rangeFor(runtimeMin){
   return {min, max: Math.max(min + 60, max)};
 }
 
-// ================= Sieć (MQTT przez publiczny serwer) =================
-// Wszyscy łączą się z publicznym brokerem MQTT (WebSocket po HTTPS) — działa przez internet, bez łączenia komputerów bezpośrednio.
-// Host trzyma pełny stan gry (łącznie z tajnym filmem). Reszta dostaje tylko stan publiczny.
-const BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-const NS = 'zgadnijklatke/v4/'; // v4: wszystkie wiadomości podpisane sekretem z linku (starsze wersje nie wejdą do pokoju)
-const topic = (code, k) => NS + code + '/' + k;
-const rid = () => Math.random().toString(36).slice(2, 10);
-const S = {me: null, name: '', code: null, isHost: false, mq: null, pub: null, myFilm: null, seen: new Map(), keys: null,
-           secret: null, hmac: null, txSeq: 0, rxSeq: new Map(), lastVer: 0};
-const MAX_PLAYERS = 12;          // zapora na zalew fałszywych „dołączeń”
-const MIN_HUMAN_MS = 1200;       // szybszy „strzał” niż to od pokazania klatki to nie człowiek
-const CHEAT_PENALTY = 3;         // kara punktowa dla przyłapanego oszusta
-let H = null; // stan hosta
-
-// ---------- szyfrowanie filmu ----------
-// Broker jest publiczny — każdy, kto zna kod pokoju, może podsłuchiwać. Dlatego wylosowany film
-// wybierający szyfruje kluczem publicznym hosta (ECDH P-256 + AES-GCM); odczytać go może tylko host.
-const EC = {name: 'ECDH', namedCurve: 'P-256'};
-const b64 = buf => { let s = ''; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s) };
-const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-const aesFrom = (priv, pub) => crypto.subtle.deriveKey({name: 'ECDH', public: pub}, priv, {name: 'AES-GCM', length: 256}, false, ['encrypt', 'decrypt']);
-async function hostKeys(saved){
-  if (saved?.priv && saved.pub) return {priv: await crypto.subtle.importKey('jwk', saved.priv, EC, true, ['deriveKey']), pub: saved.pub, saved};
-  const kp = await crypto.subtle.generateKey(EC, true, ['deriveKey']);
-  const pub = await crypto.subtle.exportKey('jwk', kp.publicKey), priv = await crypto.subtle.exportKey('jwk', kp.privateKey);
-  return {priv: kp.privateKey, pub, saved: {pub, priv}};
-}
-async function sealForHost(hostPubJwk, obj){
-  const hostPub = await crypto.subtle.importKey('jwk', hostPubJwk, EC, false, []);
-  const eph = await crypto.subtle.generateKey(EC, true, ['deriveKey']);
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({name: 'AES-GCM', iv}, await aesFrom(eph.privateKey, hostPub), new TextEncoder().encode(JSON.stringify(obj)));
-  return {epk: await crypto.subtle.exportKey('jwk', eph.publicKey), iv: b64(iv), ct: b64(ct)};
-}
-async function openSealed(box){
-  const epk = await crypto.subtle.importKey('jwk', box.epk, EC, false, []);
-  const pt = await crypto.subtle.decrypt({name: 'AES-GCM', iv: unb64(box.iv)}, await aesFrom(S.keys.priv, epk), unb64(box.ct));
-  return JSON.parse(new TextDecoder().decode(pt));
-}
-
-// ---------- podpisy wiadomości (HMAC wspólnym sekretem z linku) ----------
-// Sekret jest w linku zaproszenia (część po #) i NIE trafia na broker. Każdą wiadomość nim
-// podpisujemy; host i goście wyrzucają wiadomości z błędnym podpisem. Dzięki temu ktoś, kto zna
-// tylko kod pokoju (bez linku), nic nie wstrzyknie ani nie udaje, że „host zamknął pokój”.
-const enc = s => new TextEncoder().encode(s);
-const newSecret = () => rid() + rid() + rid() + rid();
-const hmacKey = secret => crypto.subtle.importKey('raw', enc(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign', 'verify']);
-async function sealMsg(kind, obj){ // kind ('up'/'state'/'frame') jest w podpisie, więc nie da się przerzucić wiadomości na inny kanał
-  const d = JSON.stringify(obj);
-  const sig = b64(await crypto.subtle.sign('HMAC', S.hmac, enc(kind + '|' + d)));
-  return JSON.stringify({d, sig});
-}
-async function openMsg(kind, raw){
-  let o; try { o = JSON.parse(raw) } catch { return null }
-  if (!o || typeof o.d !== 'string' || typeof o.sig !== 'string') return null;
-  let ok = false; try { ok = await crypto.subtle.verify('HMAC', S.hmac, unb64(o.sig), enc(kind + '|' + o.d)) } catch {}
-  if (!ok) return null;
-  try { return JSON.parse(o.d) } catch { return null }
-}
-// anty-replay: numer kolejny rośnie z każdą wiadomością nadawcy; podrzucenie starej (z podsłuchu) odpada
-function seqOk(from, n){ if (typeof n !== 'number') return true; const last = S.rxSeq.get(from) || 0; if (n <= last) return false; S.rxSeq.set(from, n); return true; }
-function readSecret(){
-  let k = '';
-  try { k = new URLSearchParams(location.hash.slice(1)).get('k') || '' } catch {}
-  if (!k && S.code) { try { k = sessionStorage.getItem('zk.k.' + S.code) || '' } catch {} }
-  return k;
-}
+// ================= Sieć (serwer-sędzia na Cloudflare) =================
+// Pokój żyje na serwerze: on losuje film, trzyma odpowiedź, sprawdza strzały i liczy punkty.
+// Przeglądarka dostaje tylko stan publiczny; wybierający dodatkowo id i długość filmu, żeby złapać klatkę.
+const S = {me: null, name: '', code: null, isHost: false, ws: null, pub: null, myFilm: null};
+const MODES = {race: 'Kto pierwszy', own: 'Każdy swój film'};
+const MAX_TRIES = 3;       // trafienie za 1. razem = 3 pkt, za 2. = 2 pkt, za 3. = 1 pkt
+const MIN_HUMAN_MS = 1200; // szybszy strzał od pokazania klatki serwer uznaje za oszustwo
 
 function newCode(){ const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 5; i++) s += a[Math.floor(Math.random() * a.length)]; return s }
+function connLost(on){ $('netWarn').classList.toggle('hidden', !on) }
+function resetLanding(){ $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz'; $('btnCreate').disabled = false; $('btnCreate').textContent = 'Utwórz pokój' }
 
-function mqConnect(will){
-  return mqtt.connect(BROKER, {clientId: 'zk_' + rid(), clean: true, keepalive: 20, reconnectPeriod: 2000, connectTimeout: 10000, will});
+function connect(code, create){
+  S.code = code;
+  let retry = 0, fails = 0, welcomed = false, dead = false;
+  const open = () => {
+    const ws = new WebSocket(API.replace(/^http/, 'ws') + '/ws/' + code + (create && !welcomed ? '?create=1' : ''));
+    S.ws = ws;
+    ws.onopen = () => {
+      let token; try { token = sessionStorage.getItem('zk.tok.' + code) || undefined } catch {}
+      ws.send(JSON.stringify({t: 'hello', name: S.name, token}));
+    };
+    ws.onmessage = ev => {
+      let m; try { m = JSON.parse(ev.data) } catch { return } // „pong” i śmieci pomijamy
+      if (m.t === 'welcome') {
+        welcomed = true; retry = 0; connLost(false); S.me = m.you;
+        try { sessionStorage.setItem('zk.tok.' + code, m.token) } catch {} // po odświeżeniu wracamy jako ten sam gracz
+        enterGame();
+      } else if (m.t === 'error') {
+        if (m.code === 'draw') { S.drawing = false; S.drewTurn = null; $('btnDraw').textContent = '🎲 Wylosuj film'; $('btnDraw').disabled = false; toast(m.text, 5000); return }
+        dead = true; try { ws.close() } catch {}
+        if (m.code === 'exists' && create && !welcomed) return connect(newCode(), true); // kod zajęty — losujemy inny
+        $('landErr').textContent = m.text || 'Błąd serwera gry.'; resetLanding();
+        if (welcomed) curtain('⚡', esc(m.text) + '<br><br><button class="pri" onclick="location.href=location.pathname">Wróć</button>');
+      } else if (m.t === 'state') applyState(m.s);
+      else if (m.t === 'frame') { S.lastFrame = m; if (S.pub && m.turn === S.pub.turn) showFrame(m.img || null) }
+      else if (m.t === 'film') S.myFilm = Object.assign({turn: m.turn}, m.film);
+    };
+    ws.onclose = () => {
+      if (S.ws !== ws || dead) return;
+      if (!welcomed && ++fails >= 3) { dead = true; $('landErr').textContent = 'Nie mogę połączyć się z serwerem gry.'; resetLanding(); return }
+      connLost(welcomed);
+      setTimeout(open, Math.min(10000, 1000 * 2 ** retry++));
+    };
+  };
+  open();
 }
-function connLost(on){
-  $('netWarn').classList.toggle('hidden', !on);
-}
+setInterval(() => { if (S.ws?.readyState === 1) S.ws.send('ping') }, 20000);
 
-async function createRoom(resume){
-  const code = resume?.code || newCode();
-  S.code = code; S.isHost = true; S.me = resume?.me || 'h_' + rid();
-  S.secret = resume?.secret || newSecret();
-  try { S.keys = await hostKeys(resume?.keys); S.hmac = await hmacKey(S.secret) }
-  catch (e) { $('landErr').textContent = 'Ta przeglądarka nie obsługuje szyfrowania (WebCrypto): ' + e.message; return }
-  // gdy host zniknie, broker roześle podpisane „bye” → goście zobaczą komunikat (podróbki bez sekretu są ignorowane)
-  const will = await sealMsg('state', {t: 'bye'});
-  const mq = mqConnect({topic: topic(code, 'state'), payload: will, retain: true, qos: 1});
-  S.mq = mq;
-  let first = true;
-  mq.on('connect', () => {
-    connLost(false);
-    mq.subscribe(topic(code, 'up'), {qos: 1});
-    if (!first) { hostBroadcast(); if (H.frame) hostSendFrame(); return }
-    first = false;
-    if (resume?.H) { H = resume.H; H.players.forEach(p => { if (p.id !== S.me) p.online = false }) }
-    else H = {players: [], round: 0, turn: 0, phase: 'lobby', pickerId: null, film: null, runtime: null, range: null,
-              hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: '', settings: Object.assign({pool: 'known', mode: 'race'}, store.get('hostSettings', {}))};
-    hostHandle(S.me, {t: 'join', name: S.name});
-    if (H.frame) hostSendFrame();
-    armAutoNext(); // host odświeżył stronę w trakcie odliczania
-    enterGame();
-  });
-  mq.on('message', async (t, payload) => {
-    const m = await openMsg('up', payload.toString()); // błędny podpis (ktoś bez linku) → null, ignorujemy
-    if (!m?.from || m.from === S.me || !seqOk(m.from, m.n)) return;
-    S.seen.set(m.from, Date.now());
-    if (m.t === 'film') { // od gości film przychodzi tylko zaszyfrowany
-      if (!m.enc) return;
-      openSealed(m.enc).then(film => hostHandle(m.from, {t: 'film', film}), () => {});
-      return;
-    }
-    hostHandle(m.from, m);
-  });
-  mq.on('offline', () => connLost(true));
-  mq.on('error', e => { if (first) $('landErr').textContent = 'Nie mogę połączyć się z serwerem gry: ' + e.message });
-  // obecność: kto nie odezwał się od 30 s, jest offline
-  setInterval(() => {
-    if (!H) return;
-    let ch = false;
-    for (const p of H.players) {
-      if (p.id === S.me || !p.online) continue;
-      if (Date.now() - (S.seen.get(p.id) || 0) > 30000) { p.online = false; ch = true; markLeft(p) }
-    }
-    if (ch) hostBroadcast();
-  }, 5000);
-}
-function markLeft(p){
-  if (H.pickerId === p.id && (H.phase === 'draw' || H.phase === 'time')) H.feed.push({sys: true, text: p.name + ' wyszedł — host może powtórzyć turę albo przejść dalej.'});
-}
-
-async function joinRoom(code){
-  S.code = code; S.isHost = false;
-  S.secret = readSecret();
-  if (!S.secret) { $('landErr').textContent = 'Potrzebny pełny link zaproszenia (z częścią po #). Sam kod pokoju nie wystarczy.'; $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz'; return }
-  try { S.hmac = await hmacKey(S.secret); sessionStorage.setItem('zk.k.' + code, S.secret) } catch {}
-  S.me = sessionStorage.getItem('zk.me.' + code) || 'c_' + rid();
-  try { sessionStorage.setItem('zk.me.' + code, S.me) } catch {}
-  const will = await sealMsg('up', {from: S.me, t: 'leave', n: ++S.txSeq});
-  const mq = mqConnect({topic: topic(code, 'up'), payload: will, qos: 1});
-  S.mq = mq;
-  let gotState = false, first = true, sawState = false;
-  const failT = setTimeout(() => {
-    if (!gotState) { $('landErr').textContent = sawState ? 'Zły link do tego pokoju (sekret się nie zgadza). Poproś hosta o aktualny link.' : 'Nie ma pokoju o kodzie ' + code + ' (albo host jest offline).'; $('btnJoin').disabled = false; $('btnJoin').textContent = 'Dołącz'; mq.end(true) }
-  }, 9000);
-  mq.on('connect', () => {
-    connLost(false);
-    mq.subscribe([topic(code, 'state'), topic(code, 'frame')], {qos: 1});
-    send({t: 'join', name: S.name});
-    first = false;
-  });
-  mq.on('message', async (t, payload) => {
-    const txt = payload.toString();
-    if (t.endsWith('/state')) {
-      if (txt) sawState = true;
-      const m = await openMsg('state', txt); // podróbka / zły sekret → null
-      if (!m) return;
-      if (m.t === 'bye') { if (gotState) curtain('⚡', 'Host zamknął pokój albo stracił połączenie.<br><br><button class="pri" onclick="location.reload()">Spróbuj ponownie</button>'); return }
-      if (m.t !== 'state' || !m.s) return;
-      if (S.lastVer && (m.s.ver || 0) <= S.lastVer) return; // starsza wersja stanu (np. z opóźnienia) — pomijamy
-      S.lastVer = m.s.ver || 0;
-      if (!gotState) { gotState = true; clearTimeout(failT); enterGame() }
-      applyState(m.s);
-    } else if (t.endsWith('/frame')) {
-      const m = await openMsg('frame', txt);
-      if (!m) return;
-      if (m.turn == null || m.turn === S.pub?.turn || !S.pub) showFrame(m.img || null);
-      S.lastFrame = m;
-    }
-  });
-  mq.on('offline', () => connLost(true));
-  mq.on('error', e => { if (!gotState) $('landErr').textContent = 'Nie mogę połączyć się z serwerem gry: ' + e.message });
-  setInterval(() => send({t: 'ping'}), 10000);
-}
-
-async function send(msg){
-  if (S.isHost) { hostHandle(S.me, msg); return }
-  if (!S.mq || !S.hmac) return;
-  const payload = await sealMsg('up', Object.assign({from: S.me, n: ++S.txSeq}, msg));
-  S.mq.publish(topic(S.code, 'up'), payload, {qos: 1});
-}
-
-// ---------- logika hosta ----------
-const MODES = {race: 'Kto pierwszy', own: 'Każdy swój film'};
-const MAX_TRIES = 3; // każdy gracz ma 3 próby na turę: trafienie za 1. razem = 3 pkt, za 2. = 2 pkt, za 3. = 1 pkt
-function pubState(){
-  return {players: H.players, hostId: S.me, round: H.round, turn: H.turn || 0, phase: H.phase, pickerId: H.pickerId,
-          runtime: H.runtime, range: H.range, hints: H.hints, hintsLeft: H.hintPool.length - H.hints.length,
-          feed: H.feed.slice(-40), reveal: H.reveal, frameNote: H.frameNote, settings: H.settings,
-          guesserId: H.guesserId || null, triesBy: H.triesBy || {}, hostKey: S.keys.pub,
-          nextIn: H.nextAt ? Math.max(0, Math.ceil((H.nextAt - Date.now()) / 1000)) : null,
-          ver: (H.ver = (H.ver || 0) + 1), cheater: H.cheater || null};
-}
-// po odkryciu filmu następna tura rusza sama (host może odliczanie zatrzymać)
-const AUTO_NEXT_S = 10;
-let autoNextT = null;
-function armAutoNext(){
-  clearTimeout(autoNextT);
-  if (H.phase !== 'reveal' || !H.nextAt) return;
-  autoNextT = setTimeout(() => { if (H.phase === 'reveal' && H.nextAt) hostHandle(S.me, {t: 'next'}) }, Math.max(1000, H.nextAt - Date.now()));
-}
-async function hostBroadcast(){
-  const s = pubState();
-  applyState(s); // host widzi zmianę od razu, nie czeka na podpis
-  try { sessionStorage.setItem('zk.hostRoom', JSON.stringify({code: S.code, me: S.me, H, keys: S.keys.saved, secret: S.secret})) } catch {} // żeby host mógł odświeżyć stronę i wrócić do pokoju
-  const payload = await sealMsg('state', {t: 'state', s});
-  S.mq?.publish(topic(S.code, 'state'), payload, {qos: 1, retain: true});
-}
-async function hostSendFrame(){
-  showFrame(H.frame);
-  const payload = await sealMsg('frame', {turn: H.turn, img: H.frame});
-  S.mq?.publish(topic(S.code, 'frame'), payload, {qos: 1, retain: true});
-}
-function newTurn(pickerId){
-  H.turn = (H.turn || 0) + 1;
-  H.nextAt = null; clearTimeout(autoNextT);
-  H.frameAt = null; H.cheater = null;
-  // tryb „każdy swój film”: klatkę od osoby wybierającej zgaduje tylko następny gracz
-  const guesserId = H.settings.mode === 'own' ? pickerId : null;
-  Object.assign(H, {phase: 'draw', pickerId, guesserId, triesBy: {}, film: null, runtime: null, range: null, hints: [], hintPool: [], feed: [], reveal: null, frame: null, frameNote: ''});
-  hostSendFrame();
-  hostBroadcast();
-}
-function nextAfter(id){
-  const online = H.players.filter(p => p.online);
-  if (online.length < 2) return null;
-  const i = online.findIndex(p => p.id === id);
-  return online[(i + 1) % online.length].id;
-}
-function nextPicker(){
-  const online = H.players.filter(p => p.online);
-  if (!online.length) return null;
-  const i = online.findIndex(p => p.id === H.pickerId);
-  return online[(i + 1) % online.length].id;
-}
-function hostHandle(from, m){
-  if (!m || typeof m !== 'object') return;
-  const me = from === S.me;
-  const pl = H.players.find(p => p.id === from);
-  if (pl && !pl.online && m.t !== 'leave' && m.t !== 'ping') { pl.online = true }
-  switch (m.t){
-    case 'join': {
-      const name = String(m.name || 'Gracz').slice(0, 20).trim() || 'Gracz';
-      const old = H.players.find(p => !p.online && p.name === name);
-      if (old) { if (H.pickerId === old.id) H.pickerId = from; if (H.guesserId === old.id) H.guesserId = from; if (H.triesBy?.[old.id] != null) H.triesBy[from] = H.triesBy[old.id]; old.id = from; old.online = true; delete old.loc }
-      else if (!pl) { if (H.players.length >= MAX_PLAYERS) return; H.players.push({id: from, name, pts: 0, online: true}) }
-      hostBroadcast();
-      break;
-    }
-    case 'ping': if (pl && !pl.online) { pl.online = true; hostBroadcast() } break;
-    case 'leave': if (pl && pl.online) { pl.online = false; markLeft(pl); hostBroadcast() } break;
-    case 'start': if (me && H.phase === 'lobby' && H.players.length) { H.round = 1; newTurn(H.players[0].id) } break;
-    case 'film': // tylko osoba wybierająca, raz na turę
-      if (from !== H.pickerId || H.phase !== 'draw' || !m.film?.id) return;
-      H.film = m.film; H.runtime = m.film.runtime || null; H.range = rangeFor(H.runtime);
-      H.hintPool = buildHints(m.film); H.phase = 'time';
-      H.feed.push({sys: true, text: (pl?.name || '?') + ' wylosował film. Teraz wybiera moment.'});
-      hostBroadcast();
-      break;
-    case 'frame': // tylko osoba wybierająca, raz na turę
-      if (from !== H.pickerId || H.phase !== 'time' || typeof m.img !== 'string' || !/^(data:image\/|https:\/\/image\.tmdb\.org\/)/.test(m.img)) return;
-      H.frame = m.img; H.frameNote = String(m.note || '').slice(0, 200); H.phase = 'guess';
-      H.frameAt = Date.now(); // od tej chwili liczymy czas reakcji — strzał w ułamek sekundy to bot
-      hostSendFrame(); hostBroadcast();
-      break;
-    case 'guess': {
-      if (H.phase !== 'guess' || !pl || !H.film) return;
-      if (H.guesserId && from !== H.guesserId) return; // w trybie „każdy swój film” zgaduje tylko osoba, która wylosowała film
-      H.triesBy = H.triesBy || {};
-      const used = H.triesBy[from] || 0;
-      if (used >= MAX_TRIES) return;
-      const text = String(m.text || '').slice(0, 120);
-      // antycheat: strzał szybszy niż człowiek zdąży przeczytać klatkę, albo wklejony tytuł (flaga z klienta)
-      const reaction = H.frameAt ? Date.now() - H.frameAt : 1e9;
-      if (reaction < MIN_HUMAN_MS || m.fast === true) {
-        pl.cheats = (pl.cheats || 0) + 1;
-        pl.pts -= CHEAT_PENALTY;
-        H.triesBy[from] = MAX_TRIES; // spalone próby w tej turze
-        H.cheater = {id: from, at: Date.now()};
-        H.feed.push({sys: true, text: '🤡 ' + pl.name + (m.fast === true ? ' wkleił tytuł' : ' strzelił nieludzko szybko') + ' — oszustwo, −' + CHEAT_PENALTY + ' pkt.'});
-        hostBroadcast();
-        break;
-      }
-      const ok = (+m.id && +m.id === H.film.id) || [H.film.title, H.film.original_title].some(t => norm(t) && norm(t) === norm(text));
-      if (ok) {
-        const pts = MAX_TRIES - used;
-        pl.pts += pts;
-        H.feed.push({ok: true, text: pl.name + ' zgadł za ' + (used + 1) + '. razem! +' + pts + ' pkt'});
-        doReveal(pl.name);
-      } else {
-        H.feed.push({bad: true, name: pl.name, text});
-        H.triesBy[from] = used + 1;
-        if (used + 1 >= MAX_TRIES) H.feed.push({sys: true, text: pl.name + ' wykorzystał wszystkie próby.'});
-        // koniec tury, gdy nikt, kto może zgadywać, nie ma już prób
-        const canStill = H.players.filter(p => p.online && (!H.guesserId || p.id === H.guesserId) && (H.triesBy[p.id] || 0) < MAX_TRIES);
-        if (!canStill.length) doReveal(null);
-      }
-      hostBroadcast();
-      break;
-    }
-    case 'hint': if (me && H.phase === 'guess' && H.hints.length < H.hintPool.length) { H.hints.push(H.hintPool[H.hints.length]); hostBroadcast() } break;
-    case 'reveal': if (me && (H.phase === 'guess' || H.phase === 'time') && H.film) { doReveal(null); hostBroadcast() } break;
-    case 'next': if (me && H.phase !== 'lobby') { H.round++; newTurn(nextPicker()) } break;
-    case 'redo': if (me && H.phase !== 'lobby') newTurn(H.players.find(p => p.id === H.pickerId && p.online) ? H.pickerId : nextPicker()); break;
-    case 'stopnext': if (me && H.nextAt) { H.nextAt = null; clearTimeout(autoNextT); hostBroadcast() } break;
-    case 'settings': if (me) {
-      H.settings = {pool: POOLS[m.settings?.pool] ? m.settings.pool : 'known', mode: MODES[m.settings?.mode] ? m.settings.mode : 'race'};
-      store.set('hostSettings', H.settings);
-      if (H.phase === 'lobby') H.guesserId = null;
-      else if (H.phase === 'draw' || H.phase === 'time') H.guesserId = H.settings.mode === 'own' ? H.pickerId : null;
-      hostBroadcast();
-    } break;
-  }
-}
-function doReveal(winner){
-  const f = H.film;
-  H.phase = 'reveal';
-  H.nextAt = Date.now() + AUTO_NEXT_S * 1000; armAutoNext();
-  H.reveal = {title: f.title, original_title: f.original_title, year: (f.release_date || '').slice(0, 4), poster: f.poster_path, overview: f.overview, winner};
-  if (!winner && !H.guesserId) H.feed.push({sys: true, text: 'Nikt nie zgadł.'});
-}
-function buildHints(f){
-  return [
-    f.release_date && '📅 ' + f.release_date.slice(0, 4),
-    f.genres?.length && '🎭 ' + f.genres.join(', '),
-    f.cast?.[0] && '⭐ ' + f.cast[0],
-    f.director && '🎬 reż. ' + f.director,
-    f.cast?.[1] && '⭐ ' + f.cast[1],
-    f.tagline && '💬 „' + f.tagline + '”',
-  ].filter(Boolean);
-}
+function send(msg){ if (S.ws?.readyState === 1) S.ws.send(JSON.stringify(msg)) }
 
 // ================= Widok =================
 function enterGame(){
@@ -724,17 +432,17 @@ function showFrame(src){
 function applyState(s){
   const prevPhase = S.pub?.phase, prevTurn = S.pub?.turn;
   S.pub = s;
+  S.isHost = s.hostId === S.me;
   const me = s.players.find(p => p.id === S.me);
   const picker = s.players.find(p => p.id === s.pickerId);
   const iAmPicker = s.pickerId === S.me;
-  if (prevTurn !== s.turn) { S.myFilm = null; S.loading = false; S.pasted = false; clearPlayer() }
+  if (S.myFilm && (S.myFilm.turn !== s.turn || !iAmPicker)) S.myFilm = null; // film od serwera dotyczy tylko tej tury
+  if (prevTurn !== s.turn) { S.loading = false; S.pasted = false; clearPlayer() }
+  if (s.phase !== 'draw' && S.drawing) { S.drawing = false; $('btnDraw').textContent = '🎲 Wylosuj film' }
   if (s.phase === 'guess' && prevPhase !== 'guess') { S.guessReadyAt = Date.now(); S.pasted = false } // start pomiaru czasu reakcji u tego gracza
   if (s.cheater && s.cheater.id === S.me && s.cheater.at !== S.lastClownAt && Date.now() - s.cheater.at < 8000) { S.lastClownAt = s.cheater.at; showClown() }
-  if (!S.myFilm && s.pickerId === S.me && s.phase === 'time') {
-    try { const m = JSON.parse(sessionStorage.getItem('zk.myFilm') || 'null'); if (m?.code === S.code && m.turn === s.turn) { S.myFilm = m.film; S.drewTurn = s.turn } } catch {}
-  }
-  if (!S.isHost && (s.phase === 'guess' || s.phase === 'reveal') && S.lastFrame?.turn === s.turn && S.lastFrame.img && $('still').classList.contains('hidden')) showFrame(S.lastFrame.img);
-  if (!S.isHost && (s.phase === 'draw' || s.phase === 'time' || s.phase === 'lobby')) showFrame(null);
+  if ((s.phase === 'guess' || s.phase === 'reveal') && S.lastFrame?.turn === s.turn && S.lastFrame.img && $('still').classList.contains('hidden')) showFrame(S.lastFrame.img);
+  if (s.phase === 'draw' || s.phase === 'time' || s.phase === 'lobby') showFrame(null);
 
   $('roundPill').textContent = s.round ? 'Runda ' + s.round : 'Lobby';
   const mode = s.settings?.mode || 'race';
@@ -765,7 +473,7 @@ function applyState(s){
   $('pickDraw').classList.toggle('hidden', s.phase !== 'draw');
   $('pickTime').classList.toggle('hidden', s.phase !== 'time');
   $('btnDraw').disabled = !!S.drawing || S.drewTurn === s.turn;
-  if (s.phase === 'time' && iAmPicker && prevPhase !== 'time') { applyRange(s.range); setTimeIn(clampT((s.range.min + s.range.max) / 2 | 0)) }
+  if (s.phase === 'time' && iAmPicker && prevPhase !== 'time') { const r = curRange(); applyRange(r); setTimeIn(clampT((r.min + r.max) / 2 | 0)) }
   $('btnLoad').disabled = S.loading;
 
   // ekran
@@ -777,7 +485,7 @@ function applyState(s){
     curtain('🎲', iAmPicker ? '<b>Twoja kolej!</b> Wylosuj film — nikt go nie zobaczy, nawet ty.' : `<span class="spin"></span><b>${pn}</b> losuje film…`);
   } else if (s.phase === 'time') {
     if (!S.loading) curtain('⏱', iAmPicker
-      ? `Film wylosowany (${s.runtime ? Math.floor(s.runtime / 60) + ' h ' + (s.runtime % 60) + ' min' : '?'}). Podaj minutę i sekundę, potem <b>Złap klatkę</b>.`
+      ? `Film wylosowany (${S.myFilm?.runtime ? Math.floor(S.myFilm.runtime / 60) + ' h ' + (S.myFilm.runtime % 60) + ' min' : '?'}). Podaj minutę i sekundę, potem <b>Złap klatkę</b>.`
       : `<span class="spin"></span><b>${pn}</b> wybiera moment filmu…`);
   } else if (s.phase === 'guess' || s.phase === 'reveal') {
     $('curtain').classList.add('hidden');
@@ -785,10 +493,13 @@ function applyState(s){
 
   // zgadywanie
   const myLeft = MAX_TRIES - ((s.triesBy || {})[S.me] || 0);
-  const canGuess = s.phase === 'guess' && !!me && (!s.guesserId || s.guesserId === S.me) && myLeft > 0;
+  // wybierający zna swój film, więc zgaduje tylko w trybie „każdy swój film”
+  const mayGuess = s.guesserId ? s.guesserId === S.me : !iAmPicker;
+  const canGuess = s.phase === 'guess' && !!me && mayGuess && myLeft > 0;
   $('guess').disabled = !canGuess;
   $('guess').placeholder = canGuess ? `Wpisz tytuł i wybierz z listy — próba ${MAX_TRIES - myLeft + 1}/${MAX_TRIES}, trafienie = ${myLeft} pkt`
-    : s.phase === 'guess' && (!s.guesserId || s.guesserId === S.me) && myLeft <= 0 ? 'Wykorzystałeś wszystkie 3 próby'
+    : s.phase === 'guess' && !s.guesserId && iAmPicker ? 'Ty wybierałeś film — tym razem tylko patrzysz'
+    : s.phase === 'guess' && mayGuess && myLeft <= 0 ? 'Wykorzystałeś wszystkie 3 próby'
     : s.phase === 'reveal' ? 'Tura zakończona'
     : s.phase === 'guess' && s.guesserId ? 'Teraz zgaduje ' + (guesser?.name || '?') + ' — ty tylko patrzysz'
     : 'Poczekaj na klatkę…';
@@ -817,39 +528,14 @@ function tickNextIn(){
 setInterval(tickNextIn, 250);
 
 // ================= Akcje wybierającego =================
-$('btnDraw').onclick = async () => {
+$('btnDraw').onclick = () => {
   const s = S.pub; if (!s || s.pickerId !== S.me || s.phase !== 'draw' || S.drawing) return;
-  S.drawing = true; $('btnDraw').disabled = true; $('btnDraw').textContent = 'Losuję…';
-  try {
-    const pool = POOLS[s.settings?.pool] ? s.settings.pool : 'known';
-    let film = null;
-    // tylko filmy, które wyszły co najmniej ~4 miesiące temu (są już w playerach) i mają trochę ocen
-    const cutoff = new Date(Date.now() - 120 * 864e5).toISOString().slice(0, 10);
-    for (let tries = 0; tries < 8 && !film; tries++) {
-      const list = (await poolRequest(pool)).results
-        .filter(m => !m.adult && m.release_date && m.release_date <= cutoff && m.vote_count >= (pool === 'pl' ? 30 : 100));
-      if (!list.length) continue;
-      const pick = list[Math.floor(Math.random() * list.length)];
-      const f = await tmdb('/movie/' + pick.id, {append_to_response: 'credits'});
-      if (f.runtime && f.runtime < 40) continue;
-      film = {id: f.id, title: f.title, original_title: f.original_title, runtime: f.runtime, release_date: f.release_date,
-              genres: (f.genres || []).map(g => g.name), overview: f.overview, poster_path: f.poster_path, tagline: f.tagline,
-              cast: (f.credits?.cast || []).slice(0, 3).map(c => c.name), director: (f.credits?.crew || []).find(c => c.job === 'Director')?.name};
-    }
-    if (!film) throw new Error('nie udało się wylosować');
-    S.myFilm = film; S.drewTurn = s.turn;
-    try { sessionStorage.setItem('zk.myFilm', JSON.stringify({code: S.code, turn: s.turn, film})) } catch {}
-    if (S.isHost) send({t: 'film', film});
-    else {
-      if (!S.pub?.hostKey) throw new Error('host ma starą wersję gry — niech odświeży stronę');
-      send({t: 'film', enc: await sealForHost(S.pub.hostKey, film)});
-    }
-  } catch (e) { toast('Błąd losowania: ' + e.message) }
-  S.drawing = false; $('btnDraw').textContent = '🎲 Wylosuj film'; $('btnDraw').disabled = S.drewTurn === S.pub?.turn;
+  S.drawing = true; S.drewTurn = s.turn; $('btnDraw').disabled = true; $('btnDraw').textContent = 'Losuję…';
+  send({t: 'draw'}); // losuje serwer; dostaniemy tylko id i długość filmu
 };
 
 // ---- wybór czasu, pilnowany na żywo ----
-function curRange(){ return S.pub?.range || {min: 150, max: 7200} }
+function curRange(){ return S.myFilm?.range || {min: 150, max: 7200} }
 const clampT = t => { const {min, max} = curRange(); return Math.min(max, Math.max(min, t)) };
 function applyRange(r){
   const el = $('tRange'); el.min = r.min; el.max = r.max;
@@ -897,7 +583,7 @@ async function useTmdbStill(){
   const s = S.pub;
   if (!s || s.pickerId !== S.me || s.phase !== 'time' || !S.myFilm || S.loadedTurn === s.turn) return;
   try {
-    const im = await tmdb('/movie/' + S.myFilm.id + '/images', {include_image_language: 'null'});
+    const im = await api('/api/images/' + S.myFilm.id);
     const list = (im.backdrops || []).filter(b => !b.iso_639_1);
     if (!list.length) { toast('Ten film nie ma kadrów w TMDB — host może powtórzyć turę.', 5000); return }
     const b = list[Math.floor(Math.random() * list.length)];
@@ -1075,7 +761,7 @@ document.addEventListener('click', e => { if (!e.target.closest('.sug')) $('sugL
 // wersje zapytania i pojedyncze słowa, a potem wybieramy tytuł najbardziej podobny do wpisanego.
 const searchCache = new Map();
 const searchMovies = q => {
-  if (!searchCache.has(q)) searchCache.set(q, tmdb('/search/movie', {query: q}).then(r => r.results || [], () => []));
+  if (!searchCache.has(q)) searchCache.set(q, api('/api/search?q=' + encodeURIComponent(q)).then(r => r.results || [], () => []));
   return searchCache.get(q);
 };
 function lev(a, b){
@@ -1133,7 +819,7 @@ $('btnHint').onclick = () => send({t: 'hint'});
 $('btnReveal').onclick = () => send({t: 'reveal'});
 $('btnNext').onclick = () => send({t: 'next'});
 $('btnRedo').onclick = () => { if (confirm('Powtórzyć turę? Osoba wybierająca losuje film jeszcze raz.')) send({t: 'redo'}) };
-function inviteUrl(){ return location.origin + location.pathname + '?room=' + S.code + '#k=' + S.secret }
+function inviteUrl(){ return location.origin + location.pathname + '?room=' + S.code }
 async function copyInvite(btn){
   const url = inviteUrl(), inp = $('inviteLink');
   let ok = false;
@@ -1154,19 +840,18 @@ function readName(){
   if (!n) { $('landErr').textContent = 'Podaj nick.'; $('inName').focus(); return null }
   store.set('name', n); S.name = n; $('landErr').textContent = ''; return n;
 }
-$('btnCreate').onclick = async () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; createRoom() };
-$('btnJoin').onclick = async () => {
+$('btnCreate').onclick = () => { if (!readName()) return; $('btnCreate').disabled = true; $('btnCreate').textContent = 'Tworzę pokój…'; connect(newCode(), true) };
+$('btnJoin').onclick = () => {
   if (!readName()) return;
   const code = $('inCode').value.trim().toUpperCase();
-  if (code.length < 5) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
+  if (!/^[A-Z2-9]{5}$/.test(code)) { $('landErr').textContent = 'Wpisz 5-znakowy kod pokoju.'; return }
   $('btnJoin').disabled = true; $('btnJoin').textContent = 'Łączę…';
-  let hr = null; try { hr = JSON.parse(sessionStorage.getItem('zk.hostRoom') || 'null') } catch {}
-  if (hr?.code === code && hr.H) createRoom(hr); else joinRoom(code);
+  connect(code, false);
 };
 $('inCode').onkeydown = e => { if (e.key === 'Enter') $('btnJoin').click() };
 $('inName').onkeydown = e => { if (e.key === 'Enter') (params.get('room') ? $('btnJoin') : $('btnCreate')).click() };
-window.addEventListener('beforeunload', e => { if (S.isHost && H?.players.length > 1) { e.preventDefault(); e.returnValue = '' } });
-window.addEventListener('pagehide', () => { if (!S.isHost && S.mq) send({t: 'leave'}) });
+// odświeżenie strony w trakcie gry: wracamy do pokoju jako ten sam gracz
+if (params.get('room') && $('inName').value) { let tok = null; try { tok = sessionStorage.getItem('zk.tok.' + params.get('room').toUpperCase()) } catch {} if (tok) $('btnJoin').click() }
 </script>
 </body>
 </html>

@@ -1,0 +1,20 @@
+name = "zgadnij-klatke"
+main = "src/index.js"
+compatibility_date = "2025-10-01"
+
+# Każdy pokój to osobny Durable Object: trzyma tajny film, sprawdza strzały i liczy punkty.
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+[vars]
+# Skąd wolno łączyć się z grą (strona na GitHub Pages i lokalny podgląd).
+ALLOWED_ORIGINS = "https://liify.github.io,http://localhost:8765"
+
+# Klucz TMDB NIE jest w kodzie:
+#   lokalnie:  plik .dev.vars z linią TMDB_KEY=...
+#   na serwerze: npx wrangler secret put TMDB_KEY
